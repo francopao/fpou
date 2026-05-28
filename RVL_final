@@ -1,6 +1,5 @@
 # =============================================================================
 # RENDIMIENTOS RVL - FRANCO
-# Modernizado para Python 3.10+ / Pandas 2.x-3.x / 2026
 #
 # CAMBIOS RESPECTO AL NOTEBOOK ORIGINAL:
 #   1. Imports consolidados en un solo bloque (eliminada duplicación)
@@ -170,7 +169,7 @@ def DQ_SIS(df2, DQ_SIS_BD, ListaEx):
     ubifechas_SIS = Qest_DQ_SIS_Fechas.index(DQ_SIS_UltimaFecha)
 
     Nuevos_DQ_SIS = (
-        filtrada_sis[ubifechas:]
+        filtrada_sis[ubifechas_SIS:]
         .reset_index(drop=True)
         .dropna(how="all")
     )
