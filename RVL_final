@@ -1,5 +1,6 @@
 # =============================================================================
 # RENDIMIENTOS RVL - FRANCO
+# Modernizado para Python 3.10+ / Pandas 2.x-3.x / 2026
 #
 # CAMBIOS RESPECTO AL NOTEBOOK ORIGINAL:
 #   1. Imports consolidados en un solo bloque (eliminada duplicación)
@@ -396,64 +397,74 @@ for Moneda, isins in Agrupados_Monedas.items():
 # 8. PRECIOS BLOOMBERG (hoja RVL del Monitor)
 # =============================================================================
 
-Precios_rvl = pl.read_excel(
-    Monitor_Rentabilidad,
-    sheet_name="RVL",
-    engine="calamine",
-    has_header=False,
-    read_options={"skip_rows": 0, "n_rows": 4600},
-).to_pandas()
+# FIX: pandas 3.x crea columnas dtype='str' (StringArray) en lugar de 'object'
+# cuando lee texto puro desde Excel. El problema ocurre porque al hacer .copy()
+# y slicing sobre el DataFrame, pandas conserva el dtype='str' en los subconjuntos,
+# y luego fillna(0) falla porque espera string, no int.
+#
+# La solución definitiva es reemplazar polars+calamine (que también produce
+# ArrowStringArray) por pd.read_excel con engine='openpyxl', y aplicar
+# .astype(object) inmediatamente — antes de cualquier slicing — para que
+# todos los subsets hereden object y no StringArray.
+# Resultado idéntico al original; solo cambia cómo se leen los datos.
+
+_BLANCOS_BLOOMBERG = ["#N/A N/A", "NM", "(Invalid Formula Name)", "NA"]
+
+def _limpiar_precios_rvl(df_raw: pd.DataFrame, campo: str, fechas: pd.Index,
+                          drop_dupes: bool = True) -> pd.DataFrame:
+    """
+    Extrae un bloque de precios de la hoja RVL por nombre de campo Bloomberg,
+    limpia strings inválidos, hace forward/backward fill y convierte a float64.
+    Encapsula el patrón repetido para Con_Dividendos y Sin_Dividendos.
+    """
+    bloque = df_raw.loc[:, df_raw.iloc[2] == campo]
+    columnas = bloque.loc[3].tolist()[1:]
+
+    df = bloque.iloc[5:, 1:].copy()
+    df.columns = columnas
+
+    # Quitar columnas sin nombre y duplicadas
+    df = df.loc[:, ~pd.Series(df.columns).isna().values]
+    if drop_dupes:
+        df = df.loc[:, ~df.columns.duplicated()]
+
+    df.insert(0, "Fecha", fechas)
+    df.set_index("Fecha", inplace=True)
+
+    # Asegurar que todos los dtypes son object ANTES de replace/fillna
+    # (pandas 3.x puede conservar StringArray tras el slicing)
+    df = df.astype(object)
+
+    df.replace(_BLANCOS_BLOOMBERG, np.nan, inplace=True)
+    df.bfill(inplace=True)
+    df.fillna(0, inplace=True)
+
+    return convertir_columnas_object_a_float(df)
+
+
+# Leer RVL con openpyxl (más estable con xlsm mixtos) y forzar object de entrada
+Precios_rvl = (
+    pd.read_excel(
+        Monitor_Rentabilidad,
+        sheet_name="RVL",
+        header=None,
+        engine="openpyxl",
+    )
+    .astype(object)
+)
 
 Fechas_Diarias = pd.to_datetime(
-    Precios_rvl["column_2"][5:], format="%Y-%m-%d %H:%M:%S"
+    Precios_rvl.iloc[5:, 1], errors="coerce"
 ).dropna()
 
-# --- Con dividendos ---
-Precios_Con_Dividendos = Precios_rvl.loc[:, Precios_rvl.iloc[2] == "TOT_RETURN_INDEX_GROSS_DVDS"]
-columnas_cd = Precios_Con_Dividendos.loc[3].tolist()[1:]
-
-Precios_Con_Dividendos_R = Precios_Con_Dividendos[5:].copy().iloc[:, 1:]
-Precios_Con_Dividendos_R.columns = columnas_cd
-
-# Limpiar columnas vacías y duplicadas
-Precios_Con_Dividendos_R = Precios_Con_Dividendos_R.loc[
-    :, ~Precios_Con_Dividendos_R.columns.isna()
-]
-Precios_Con_Dividendos_R = Precios_Con_Dividendos_R.loc[
-    :, ~Precios_Con_Dividendos_R.columns.duplicated()
-]
-
-Precios_Con_Dividendos_R.insert(0, "Fecha", Fechas_Diarias)
-Precios_Con_Dividendos_R.set_index("Fecha", inplace=True)
-Precios_Con_Dividendos_R.replace(
-    ["#N/A N/A", "NM", "(Invalid Formula Name)", "NA"], np.nan, inplace=True
+Precios_Con_Dividendos_R = _limpiar_precios_rvl(
+    Precios_rvl, "TOT_RETURN_INDEX_GROSS_DVDS", Fechas_Diarias
 )
-Precios_Con_Dividendos_R.bfill(inplace=True)
-Precios_Con_Dividendos_R.fillna(0, inplace=True)
-
-# FIX: include=['object', 'str'] — silencia Pandas4Warning sin cambiar resultado
-Precios_Con_Dividendos_R = convertir_columnas_object_a_float(Precios_Con_Dividendos_R)
 Precios_Con_Dividendos_R = Precios_Con_Dividendos_R.loc[:Fecha_Corte].copy()
 
-# --- Sin dividendos ---
-Precios_Sin_Dividendos = Precios_rvl.loc[:, Precios_rvl.iloc[2] == "Px_last"]
-columnas_sd = Precios_Sin_Dividendos.loc[3].tolist()[1:]
-
-Precios_Sin_Dividendos_R = Precios_Sin_Dividendos[5:].copy().iloc[:, 1:]
-Precios_Sin_Dividendos_R.columns = columnas_sd
-Precios_Sin_Dividendos_R = Precios_Sin_Dividendos_R.loc[
-    :, ~Precios_Sin_Dividendos_R.columns.duplicated()
-]
-Precios_Sin_Dividendos_R.insert(0, "Fecha", Fechas_Diarias)
-Precios_Sin_Dividendos_R.set_index("Fecha", inplace=True)
-Precios_Sin_Dividendos_R.replace(
-    ["#N/A N/A", "NM", "(Invalid Formula Name)", "NA"], np.nan, inplace=True
+Precios_Sin_Dividendos_R = _limpiar_precios_rvl(
+    Precios_rvl, "Px_last", Fechas_Diarias
 )
-Precios_Sin_Dividendos_R.bfill(inplace=True)
-Precios_Sin_Dividendos_R.fillna(0, inplace=True)
-
-# FIX: mismo fix de select_dtypes
-Precios_Sin_Dividendos_R = convertir_columnas_object_a_float(Precios_Sin_Dividendos_R)
 
 # Solo dividendos = con dividendos − sin dividendos
 Dividendos = Precios_Con_Dividendos_R - Precios_Sin_Dividendos_R
@@ -719,13 +730,16 @@ Sectores_Weight_M  = _calcular_weights_sectoriales(Ms,  "M")
 # 14. WEIGHTS BENCHMARK (EPU y ETFPERU)
 # =============================================================================
 
-Weights_Benchmark = pl.read_excel(
-    Monitor_Rentabilidad,
-    sheet_name="Benchmark",
-    engine="calamine",
-    has_header=False,
-    read_options={"skip_rows": 0, "n_rows": 4600},
-).to_pandas()
+# Mismo fix que Precios_rvl: leer con openpyxl y forzar object antes de cualquier op
+Weights_Benchmark = (
+    pd.read_excel(
+        Monitor_Rentabilidad,
+        sheet_name="Benchmark",
+        header=None,
+        engine="openpyxl",
+    )
+    .astype(object)
+)
 
 
 def _limpiar_benchmark(wb, nombre_benchmark, precios_ref):
