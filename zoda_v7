@@ -1,304 +1,160 @@
-"""
-================================================================================
-  ZODA - MONITOR DE VALORIZACIÓN AFP INTEGRA
-  Versión: 2.1  |  Actualizado para Python 3.10+ / 2026
-  Autor original: equipo Mesa de Inversiones AFP Integra
-  Refactorizado por: Ingeniería de Sistemas
-================================================================================
 
-¿QUÉ HACE ESTE SCRIPT?
------------------------
-  1. Lee la base de datos de DQ_IN (posiciones del fondo) desde QEST_BD.xlsm
-     y la actualiza en ZODA.xlsm.
-  2. Lee datos financieros de Capital IQ (CIQ) y Bloomberg (BBG) desde ZODA.xlsm.
-  3. Calcula múltiplos de valorización: P/E, P/S, P/B, EV/EBITDA (trailing y forward).
-  4. Calcula Z-scores históricos de esos múltiplos para cada empresa y sus baskets.
-  5. Exporta los resultados a Excel: BD en ZODA.xlsm y un archivo Multiplos_hist.xlsx.
-  6. Genera un PDF con gráficos de evolución de Z-scores y múltiplos por empresa.
-  7. Exporta múltiplos comparables a un Excel compartido de red.
-
-LIBRERÍAS NECESARIAS (instalar con pip si faltan):
----------------------------------------------------
-  pip install pandas numpy openpyxl matplotlib
-
-  NOTAS DE COMPATIBILIDAD (v2.1):
-  - xlwings ELIMINADO: causaba crash del kernel en Spyder. Se reemplazó por
-    openpyxl puro, que funciona en Spyder, PyCharm y cualquier entorno.
-  - xlrd ELIMINADO: obsoleto para .xlsx/.xlsm (solo servía para .xls legacy).
-  - polars / fastexcel / calamine ELIMINADOS: reemplazados por pandas + openpyxl.
-  - win32com ELIMINADO: nunca se usaba directamente en el código.
-  - pandas ArrowStringArray: se fuerza dtype=object al leer Excel para evitar
-    el error "'ArrowStringArray' object has no attribute 'flatten'".
-
-ESTRUCTURA DE ARCHIVOS (todos en la carpeta 'shortcut' definida en RUTA_BASE):
--------------------------------------------------------------------------------
-  ZODA.xlsm      → Archivo principal con datos BBG/CIQ y configuración
-  QEST_BD.xlsm   → Base de datos de posiciones (DQ_IN)
-
-ARCHIVOS DE SALIDA:
--------------------
-  ZODA.xlsm               → Hojas "BD" y "DQ_IN" actualizadas
-  Multiplos_hist.xlsx     → Histórico de múltiplos por sector GICS
-  PDFs/Evolucion Z y Multiplos DD.MM.AA.pdf  → Gráficos por empresa
-  Evolución de Múltiplos Comparables.xlsx    → Múltiplos para presentaciones (red)
-================================================================================
-"""
 
 # ==============================================================================
-# SECCIÓN 1: IMPORTACIÓN DE LIBRERÍAS
+# ZODA — MONITOR DE VALORIZACIÓN AFP INTEGRA
+# v6 — Reescritura fiel al notebook original (2020), modernizada para Python 3.11+
+#       Sin xlwings ni win32com. Usa openpyxl para lectura/escritura.
 # ==============================================================================
-# Librerías estándar de Python (ya vienen incluidas, no hay que instalar nada)
+
 import os
 import datetime
-
-# Librerías de análisis de datos — instalar con: pip install pandas numpy
-import numpy  as np
+import numpy as np
 import pandas as pd
-
-# Para leer y escribir archivos Excel .xlsx / .xlsm — pip install openpyxl
 from openpyxl import load_workbook
-
-# Para generar gráficos — pip install matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.dates  as mdates
-from matplotlib.backends.backend_pdf import PdfPages
-
+from time import strftime
 
 # ==============================================================================
-# SECCIÓN 2: CONFIGURACIÓN GENERAL
+# SECCIÓN 1: RUTAS
 # ==============================================================================
 
-# Marca de tiempo al inicio (para medir cuánto tarda el script)
-INICIO = datetime.datetime.now()
-FECHA_HOY = datetime.datetime.today().strftime('%d.%m.%y')
-
-# ------------------------------------------------------------------------------
-# RUTAS DE ARCHIVOS
-# Modifica solo RUTA_BASE si cambias la ubicación de la carpeta.
-# El resto se construye automáticamente desde esa base.
-# ------------------------------------------------------------------------------
-RUTA_BASE = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut"
-
-RUTA_QEST              = os.path.join(RUTA_BASE, "QEST_BD.xlsm")
-RUTA_ZODA              = os.path.join(RUTA_BASE, "ZODA.xlsm")
-RUTA_MULTIPLOS_HIST    = os.path.join(RUTA_BASE, "Multiplos_hist.xlsx")
-
-# Archivo de red para las presentaciones semestrales
-RUTA_MULT_COMPARABLES = (
-    r"\\sppeapp00023\Inversiones\Mesa de Inversiones\Bottom-Up"
-    r"\5 Estrategia del Portafolio\Monitores\ZODA\Evolución de Múltiplos Comparables.xlsx"
+RUTA_BASE   = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut"
+RUTA_ZODA   = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut\ZODA.xlsm"
+RUTA_QEST   = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut\Benchmarking\QEST_BD.xlsm"
+RUTA_MULTIPLOS_HIST = os.path.join(RUTA_BASE, "Multiplos_hist.xlsx")
+RUTA_MULT_COMP = (
+    r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA"
+    r"\Docs privados\ZODA\shortcut"
+    r"\Evolución de Múltiplos Comparables.xlsx"
 )
-
-# Carpeta donde se guardan los PDFs de gráficos
 RUTA_PDF = (
-    r"Z:\Mesa de Inversiones\Bottom-Up\5 Estrategia del Portafolio"
-    r"\Monitores\ZODA\PDFs"
+    r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados"
+    r"\ZODA\shortcut"
 )
 
-
 # ==============================================================================
-# SECCIÓN 3: PARÁMETROS DEL MODELO Z-SCORE
+# SECCIÓN 2: PARÁMETROS GLOBALES (idénticos al notebook original)
 # ==============================================================================
 
-# Ventanas temporales para el Z-score rolling (en años)
-ANIOS_Z = [1, 3, 5, 10]
+ANIOS_Z        = [1, 3, 5, 10]
+PESOS_Z        = [0.33, 0.33, 0.33, 0.00]
 
-# Peso de cada ventana en el Z-score compuesto (deben sumar 1)
-# Orden: [1 año, 3 años, 5 años, 10 años]
-PESOS_Z = [0.33, 0.33, 0.33, 0.00]
+#               Trail_PE  Fwd_PE  Trail_PS  Fwd_PS  Trail_PB  Fwd_PB  Trail_EV  Fwd_EV
+PESOS_FINAN    = [0.33,    0,      0.33,     0,      0.33,     0,      0,        0]
+PESOS_EX_FINAN = [0.25,    0,      0.25,     0,      0.25,     0,      0.25,     0]
 
-# Pesos por múltiplo para el Z-score final de cada empresa
-# Orden de columnas: Trail P/E, Fwd P/E, Trail P/S, Fwd P/S,
-#                    Trail P/B, Fwd P/B, Trail EV/EBITDA, Fwd EV/EBITDA
-PESOS_MULT_FINANCIERAS    = [0.33, 0.00, 0.33, 0.00, 0.33, 0.00, 0.00, 0.00]
-PESOS_MULT_NO_FINANCIERAS = [0.25, 0.00, 0.25, 0.00, 0.25, 0.00, 0.25, 0.00]
-
-# Índices bursátiles de referencia
 TODAS_INDICES = [
-    "SPBLPGPT Index",   # S&P BVL Perú General
-    "IPSA Index",        # Chile
-    "IBOV Index",        # Brasil
-    "COLCAP Index",      # Colombia
-    "MEXBOL Index",      # México
-    "MXLA Index",        # MSCI Latinoamérica (se usa como denominador en Z relativo)
+    "SPBLPGPT Index", "IPSA Index", "IBOV Index",
+    "COLCAP Index", "MEXBOL Index", "MXLA Index"
 ]
 
+# Strings vacíos de Bloomberg/CIQ que se tratan como 0
+_VACIOS = ["#N/A N/A", "NM", "(Invalid Formula Name)", "NA", "#VALUE!"]
 
 # ==============================================================================
-# SECCIÓN 4: DEFINICIÓN DE ACTIVOS (ISINs para DQ_IN)
+# SECCIÓN 3: UTILIDADES DE LECTURA
 # ==============================================================================
 
-ISINS_DQ_IN = [
-    "Fondo", "Dato", "Fecha", "SBS",
-    "302012200001", "300013200002", "300013200001", "300011100001",
-    "300009100001", "302002100001", "302051100001", "312051100001",
-    "3220512Q1094", "302029100001", "3220082A1040", "302008100002",
-    "302072200001", "302845100002", "395833228291", "312039100001",
-    "302043100001", "302043100002", "302032100002", "302030100001",
-    "302061100001", "302011100001", "312011100001", "302107100001",
-    "3021012171A1", "345874294721", "312025100001", "312034100001",
-    "312026100001", "3020836W5029", "3220292P2083",
-]
-
-# Solo los ISINs numéricos (sin las columnas de texto)
-ISINS_NUMERICOS = [c for c in ISINS_DQ_IN if c not in ("Fondo", "Dato", "Fecha", "SBS")]
-
-
-# ==============================================================================
-# SECCIÓN 5: FUNCIÓN AUXILIAR — LECTURA DE EXCEL SIN ARROW STRINGS
-# ==============================================================================
-
-def leer_hoja_excel(ruta: str, hoja: str, n_filas: int = 7600,
+def leer_hoja_excel(ruta: str, hoja: str,
+                    n_filas: int = 7600,
                     con_encabezado: bool = False) -> pd.DataFrame:
-    """
-    Lee una hoja de un archivo .xlsm/.xlsx con pandas + openpyxl.
-
-    Por qué dtype=object:
-        Pandas moderno (2.x) puede usar Arrow como backend de strings, lo que
-        devuelve columnas de tipo ArrowStringArray que no tienen .flatten() ni
-        otros métodos clásicos. Forzar dtype=object garantiza numpy strings
-        normales y evita ese error.
-
-    Parámetros:
-        ruta          : ruta completa al archivo Excel
-        hoja          : nombre de la pestaña
-        n_filas       : máximo de filas a leer
-        con_encabezado: si True usa la primera fila como encabezado
-
-    Retorna:
-        DataFrame con columnas "column_0", "column_1", ... (si sin encabezado)
-    """
+    """Lee una hoja Excel con dtype=object para evitar ArrowStringArray."""
     header = 0 if con_encabezado else None
-
     df = pd.read_excel(
-        ruta,
-        sheet_name=hoja,
-        header=header,
-        nrows=n_filas,
-        engine="openpyxl",
-        dtype=object,          # ← clave: evita ArrowStringArray
+        ruta, sheet_name=hoja,
+        header=header, nrows=n_filas,
+        engine="openpyxl", dtype=object,
     )
-
     if not con_encabezado:
         df.columns = [f"column_{i}" for i in range(len(df.columns))]
-
     return df
 
 
-# ==============================================================================
-# SECCIÓN 6: LECTURA Y PROCESAMIENTO DE BASKETS
-# ==============================================================================
+def escribir_df_en_excel(ruta: str, hoja: str,
+                          df: pd.DataFrame,
+                          incluir_indice: bool = True) -> None:
+    """Sobreescribe el contenido de una hoja Excel preservando macros."""
+    wb = load_workbook(ruta, keep_vba=True)
+    if hoja in wb.sheetnames:
+        ws = wb[hoja]
+        ws.delete_rows(1, ws.max_row)
+    else:
+        ws = wb.create_sheet(hoja)
 
-def leer_baskets(ruta: str) -> tuple:
-    """
-    Lee la hoja "Baskets" del ZODA.xlsm y extrae tres grupos sectoriales:
-        - Financieras
-        - Con, Ind y HC  (Consumo, Industriales y Healthcare)
-        - Mineria y Utilities
+    df_exp = df.reset_index() if incluir_indice else df.reset_index(drop=True)
 
-    Para cada grupo devuelve:
-        todas_X    → lista de todos los tickers (empresa principal + comparables)
-        empresas_X → lista de tickers de empresas principales
-        basket_X   → dict {empresa_principal: [lista_de_comparables]}
+    for col_i, col_name in enumerate(df_exp.columns, start=1):
+        ws.cell(row=1, column=col_i, value=str(col_name))
 
-    Retorna una tupla de 9 elementos en el orden indicado.
-    """
-    df = leer_hoja_excel(ruta, "Baskets", n_filas=100)
-    df = df.dropna(axis=1, how="all")
+    for row_i, row in enumerate(df_exp.itertuples(index=False), start=2):
+        for col_i, valor in enumerate(row, start=1):
+            if isinstance(valor, (pd.Timestamp, datetime.datetime)):
+                valor = valor.to_pydatetime() if isinstance(valor, pd.Timestamp) else valor
+            elif isinstance(valor, (pd.Period,)):
+                valor = str(valor)
+            elif isinstance(valor, float) and np.isnan(valor):
+                valor = None
+            ws.cell(row=row_i, column=col_i, value=valor)
 
-    def extraer_grupo(nombre_grupo: str):
-        """
-        Filtra las filas del grupo, extrae empresas principales y sus comparables.
-        Se usa .tolist() en lugar de .flatten() para compatibilidad con Arrow.
-        """
-        subset = df[df.iloc[:, 0] == nombre_grupo].copy()
-        subset = subset.drop(subset.columns[0], axis=1)
-        subset = subset.dropna(axis=1, how="all")
-
-        # Aplanar todos los valores del subset (empresas principales + comparables)
-        # Nota: usamos un loop explícito en lugar de .flatten() para evitar
-        # el error de ArrowStringArray en pandas 2.x
-        todos_valores = []
-        for _, fila in subset.iterrows():
-            todos_valores.extend(fila.tolist())
-
-        todas = [
-            x for x in todos_valores
-            if x is not None and str(x) not in ("None", "nan") and pd.notna(x)
-        ]
-        todas = list(dict.fromkeys(todas))  # eliminar duplicados manteniendo orden
-
-        # Empresas principales: solo la primera columna
-        empresas = [
-            x for x in subset.iloc[:, 0].tolist()
-            if x is not None and str(x) not in ("None", "nan") and pd.notna(x)
-        ]
-        empresas = list(dict.fromkeys(empresas))
-
-        # Construir el diccionario basket: empresa → [comparables]
-        col_empresas = subset.iloc[:, 0].tolist()
-        basket = {}
-        for emp in empresas:
-            idx = col_empresas.index(emp)
-            comparables = subset.iloc[idx, 1:].tolist()
-            comparables = [
-                v for v in comparables
-                if v is not None and str(v) not in ("None", "nan") and pd.notna(v)
-            ]
-            basket[emp] = list(dict.fromkeys(comparables))
-
-        return todas, empresas, basket
-
-    todas_finan,      emp_finan, basket_finan = extraer_grupo("Financieras")
-    todas_cons_const, emp_cc,    basket_cc    = extraer_grupo("Con, Ind y HC")
-    todas_min_utl,    emp_mu,    basket_mu    = extraer_grupo("Mineria y Utilities")
-
-    return (todas_finan, emp_finan, basket_finan,
-            todas_cons_const, emp_cc, basket_cc,
-            todas_min_utl, emp_mu, basket_mu)
+    wb.save(ruta)
+    print(f"  ✓ Escrito: {os.path.basename(ruta)} → hoja '{hoja}'")
 
 
 # ==============================================================================
-# SECCIÓN 7: ACTUALIZACIÓN DE LA BASE DQ_IN
+# SECCIÓN 4: ACTUALIZACIÓN DE DQ_IN
 # ==============================================================================
 
-def actualizar_DQ_IN(df_qest: pd.DataFrame, dq_in_bd: pd.DataFrame) -> pd.DataFrame:
+def actualizar_DQ_IN(df_qest: pd.DataFrame,
+                     dq_in_bd: pd.DataFrame) -> pd.DataFrame:
     """
-    Incorpora las filas nuevas de QEST_BD al historial DQ_IN de ZODA.
-
-    Proceso:
-        1. Elimina las primeras 10 filas de metadatos de QEST.
-        2. Transpone y filtra solo los ISINs relevantes.
-        3. Identifica desde qué fecha hay datos nuevos (después de la última
-           fecha ya guardada en ZODA.xlsm).
-        4. Filtra solo filas de tipo "Q" o "PxQ" (cantidad o monto operado).
-        5. Concatena la base existente + las filas nuevas.
-
-    Parámetros:
-        df_qest  : DataFrame crudo de la hoja "DQ_IN" de QEST_BD.xlsm
-        dq_in_bd : DataFrame actual de la hoja "DQ_IN" de ZODA.xlsm
-
-    Retorna:
-        DataFrame actualizado listo para escribir de vuelta en ZODA.xlsm
+    Replica exactamente la función DQ_IN del notebook original.
+    Toma las filas nuevas del QEST a partir de la última fecha registrada
+    en la BD y las concatena.
     """
-    # Limpiar metadatos y transponer
-    df_qest = df_qest.drop(df_qest.index[:10])
-    df_qest = df_qest.transpose()
-    df_qest = df_qest.rename(columns={df_qest.columns[0]: "Isins"})
+    LISTA_IN = [
+        "Fondo", "Dato", "Fecha", "SBS",
+        "302012200001", "300013200002", "300013200001", "300011100001",
+        "300009100001", "302002100001", "302051100001", "312051100001",
+        "3220512Q1094", "302029100001", "3220082A1040", "302008100002",
+        "302072200001", "302845100002", "395833228291", "312039100001",
+        "302043100001", "302043100002", "302032100002", "302030100001",
+        "302061100001", "302011100001", "312011100001", "302107100001",
+        "3021012171A1", "345874294721", "312025100001", "312034100001",
+        "312026100001", "3020836W5029", "3220292P2083",
+    ]
 
-    # Quedarse solo con los ISINs relevantes
-    filtrada = df_qest[df_qest["Isins"].isin(ISINS_DQ_IN)].transpose()
+    # Eliminar las primeras 10 filas (metadatos QEST) y transponer
+    df = df_qest.drop(df_qest.index[list(range(0, 10))])
+    df = df.transpose()
+    df = df.rename(columns={df.columns[0]: "Isins"})
+
+    filtrada = df[df["Isins"].isin(LISTA_IN)].transpose()
     filtrada.columns = filtrada.iloc[0].tolist()
-    filtrada = filtrada.iloc[1:]
+    filtrada = filtrada[1:]
 
-    # Detectar la última fecha ya registrada en la base
-    ultima_fecha_bd = dq_in_bd["Fecha"].dropna().iloc[-1]
+    # Última fecha registrada en la BD (la más reciente)
+    ultima_fecha_bd = dq_in_bd["Fecha"][::-1].iloc[0]
     print(f"  → DQ_IN: última fecha registrada = {ultima_fecha_bd}")
 
-    fechas_qest   = filtrada["Fecha"].tolist()  # .tolist() en vez de .values para Arrow
-    indice_inicio = fechas_qest.index(ultima_fecha_bd) + 9
+    # Buscar esa fecha en QEST de forma robusta (normalizar a date)
+    ultima_norm = pd.Timestamp(ultima_fecha_bd).normalize()
+    fechas_qest = filtrada["Fecha"].tolist()
 
-    # Extraer filas nuevas y filtrar por tipo de dato
+    fechas_norm = []
+    for f in fechas_qest:
+        try:
+            fechas_norm.append(pd.Timestamp(f).normalize() if f is not None and not isinstance(f, str) else None)
+        except Exception:
+            fechas_norm.append(None)
+
+    if ultima_norm not in fechas_norm:
+        validas = [f for f in fechas_norm if f is not None]
+        rango = f"{validas[0].date()} → {validas[-1].date()}" if validas else "sin fechas válidas"
+        raise ValueError(
+            f"La fecha {ultima_norm.date()} no se encontró en DQ_IN de QEST. "
+            f"Rango disponible: {rango}"
+        )
+
+    indice_inicio = fechas_norm.index(ultima_norm) + 9
     nuevas_filas = filtrada.iloc[indice_inicio:].reset_index(drop=True)
     nuevas_filas = nuevas_filas[
         nuevas_filas["Dato"].astype(str).str.contains(r"Q|PxQ", na=False)
@@ -308,430 +164,414 @@ def actualizar_DQ_IN(df_qest: pd.DataFrame, dq_in_bd: pd.DataFrame) -> pd.DataFr
 
 
 # ==============================================================================
-# SECCIÓN 8: CÁLCULO DE FORWARDS A 12 MESES
+# SECCIÓN 5: LECTURA DE BASKETS
 # ==============================================================================
 
-def calcular_forwards_12_meses(base: pd.DataFrame, nombres_cols: list) -> pd.DataFrame:
+def leer_baskets(ruta: str):
     """
-    Para cada fecha del índice, busca el valor correspondiente 12 meses adelante.
-    Si no existe la fecha exacta, toma la fecha anterior más cercana disponible.
-    Si el horizonte supera el último dato disponible, mantiene el valor plano (0%).
-
-    Se usa para estimar los valores "forward" de métricas financieras (NI, ventas, etc.)
-    cuando no hay datos de consenso disponibles.
-
-    Parámetros:
-        base        : DataFrame con fechas como índice
-        nombres_cols: columnas para las que se crea el forward (se renombran con prefijo Fwd_)
-
-    Retorna:
-        DataFrame original con las columnas forward añadidas al final
+    Lee la hoja Baskets y devuelve las 9 listas/dicts igual que el notebook.
+    Retorna: (Todas_Finan, Empresas_Financieras, Basket_Financieras,
+               Todas_Cons_Const, Empresas_Cons_Const, Basket_Cons_Const,
+               Todas_Min_Utl, Empresas_Min_Utl, Basket_Min_Utl)
     """
-    fechas    = pd.Series(base.index.tolist())
-    fecha_max = fechas.max()
-    mapa      = {f: i for i, f in enumerate(fechas)}   # búsqueda O(1)
+    df = leer_hoja_excel(ruta, "Baskets", n_filas=100)
+    df = df.dropna(axis=1, how="all")
 
-    forwards = {col: [None] * len(fechas) for col in nombres_cols}
+    def _extraer_grupo(nombre_grupo):
+        bloque = df[df.iloc[:, 0] == nombre_grupo].copy()
+        bloque = bloque.drop(bloque.columns[0], axis=1)
+        bloque = bloque.dropna(axis=1, how="all")
 
-    for idx, dia in enumerate(fechas):
-        objetivo = (dia + pd.DateOffset(months=12)).replace(hour=0, minute=0, second=0)
+        todas = []
+        empresas = []
+        basket_dic = {}
 
-        for col in nombres_cols:
-            col_idx = nombres_cols.index(col)
+        for _, fila in bloque.iterrows():
+            vals = [v for v in fila.tolist() if pd.notna(v) and str(v).strip()]
+            if not vals:
+                continue
+            empresa = vals[0]
+            comparables = vals[1:]
+            if empresa not in empresas:
+                empresas.append(empresa)
+            basket_dic[empresa] = comparables
+            for t in [empresa] + comparables:
+                if t not in todas:
+                    todas.append(t)
 
-            if objetivo in mapa:
-                valor = base.iloc[mapa[objetivo], col_idx]
+        return todas, empresas, basket_dic
+
+    todas_f,  emp_f,  basket_f  = _extraer_grupo("Financieras")
+    todas_cc, emp_cc, basket_cc = _extraer_grupo("Con, Ind y HC")
+    todas_mu, emp_mu, basket_mu = _extraer_grupo("Mineria y Utilities")
+
+    return (todas_f,  emp_f,  basket_f,
+            todas_cc, emp_cc, basket_cc,
+            todas_mu, emp_mu, basket_mu)
+
+
+# ==============================================================================
+# SECCIÓN 6: FORWARDS A 12 MESES (idéntico al notebook original)
+# ==============================================================================
+
+def forwards_one_year(base: pd.DataFrame, names: list) -> pd.DataFrame:
+    """
+    Para cada fecha del índice, toma el valor de 12 meses adelante.
+    Si no existe la fecha exacta, usa la anterior más cercana.
+    Replica exactamente la función forwards_one_year del notebook original.
+    """
+    fechas_bd = pd.Series(base.index.tolist())
+    date_to_index = {date: idx for idx, date in enumerate(fechas_bd)}
+    max_fecha = fechas_bd.max()
+    tasa = 0
+
+    doce_meses = {name: [None] * len(fechas_bd) for name in names}
+
+    for idx, dia in enumerate(fechas_bd):
+        fwd = (dia + pd.DateOffset(months=12)).replace(hour=0, minute=0, second=0)
+
+        for name in names:
+            col_idx = names.index(name)
+            if fwd in date_to_index:
+                valor = base.iloc[date_to_index[fwd], col_idx]
             else:
-                previas = fechas[fechas < objetivo]
+                previas = fechas_bd[fechas_bd < fwd]
                 if not previas.empty:
                     cercana = previas.max()
-                    valor   = base.iloc[mapa[cercana], col_idx]
-                    if objetivo > fecha_max:
-                        dias_extra = (objetivo - fecha_max).days
-                        valor = valor * (1 + 0) ** (dias_extra / 365)  # crecimiento 0%
+                    valor = base.iloc[date_to_index[cercana], col_idx]
+                    if fwd > max_fecha:
+                        diff_dias = (fwd - max_fecha).days
+                        valor = valor * (1 + tasa) ** (diff_dias / 365)
                 else:
                     valor = None
+            doce_meses[name][idx] = valor
 
-            forwards[col][idx] = valor
-
-    return pd.concat([base, pd.DataFrame(forwards, index=base.index)], axis=1)
+    fwd_df = pd.DataFrame(doce_meses, index=base.index)
+    return pd.concat([base, fwd_df], axis=1)
 
 
 # ==============================================================================
-# SECCIÓN 9: LIMPIEZA DE DATOS POR EMPRESA
+# SECCIÓN 7: LIMPIEZA DE DATOS (fiel al notebook original)
 # ==============================================================================
-
-# Strings que Bloomberg y CIQ usan cuando no hay dato → los tratamos como 0
-_VACIOS_BBG = ["#N/A N/A", "NM", "(Invalid Formula Name)", "NA", "#VALUE!"]
-
 
 def _limpiar_vacios(df: pd.DataFrame) -> pd.DataFrame:
-    """Reemplaza strings vacíos de fuentes externas por 0."""
-    for v in _VACIOS_BBG:
+    for v in _VACIOS:
         df.replace(v, 0, inplace=True)
     return df
 
 
-def limpiar_datos_CIQ(datos_hoja: pd.DataFrame,
-                       fechas_trimestrales: pd.Series,
-                       ticker: str) -> pd.DataFrame:
+def LimpiandoCIQ(base: pd.DataFrame,
+                  fechas_tri: pd.Series,
+                  nombre: str) -> pd.DataFrame:
     """
     Extrae y limpia datos trimestrales de Capital IQ para un ticker.
+    Replica exactamente LimpiandoCIQ del notebook original.
 
-    Capital IQ aporta 4 métricas fundamentales (trimestrales):
-        IQ_NI           → Net Income (Utilidad neta)
-        IQ_TOTAL_REV    → Ventas totales
-        IQ_TOTAL_EQUITY → Patrimonio (Book Value)
-        IQ_EBITDA       → EBITDA
-
-    Luego calcula los forwards a 12 meses de cada una.
+    IMPORTANTE: En el notebook original el insert de Fechas_Tri se hace
+    ANTES del dropna, asumiendo que len(CIQ rows) == len(Fechas_Tri).
+    Aquí replicamos ese comportamiento con protección por si difieren.
     """
-    # Filtrar columnas de este ticker (la fila 4 contiene el nombre de la empresa)
-    cols    = datos_hoja.loc[:, datos_hoja.iloc[4] == ticker]
-    nombres = cols.iloc[2].tolist()
-    datos   = cols.iloc[5:].copy()
-    datos.columns = nombres
+    data_emp = base.loc[:, base.iloc[4] == nombre]
+    columnas = data_emp.iloc[2].tolist()
+    data_emp_ = data_emp.iloc[5:].copy()
+    data_emp_.columns = columnas
 
-    # Las primeras 4 columnas son de CIQ
-    ciq = datos.iloc[:, :4].dropna(axis=0, how="all").fillna(0)
-    ciq.insert(0, "Fecha", fechas_trimestrales.values)
-    ciq = ciq.set_index("Fecha")
-    ciq = _limpiar_vacios(ciq)
-    ciq = ciq.astype(np.float64)
+    # Las primeras 4 columnas son CIQ
+    data_ciq = data_emp_.iloc[:, :4].dropna(axis=0, how="all")
+    data_ciq = data_ciq.fillna(0)
 
-    # Agregar columnas forward
-    nombres_fwd = ["Fwd_IQ_NI", "Fwd_IQ_TOTAL_REV", "Fwd_IQ_TOTAL_EQUITY", "Fwd_IQ_EBITDA"]
-    ciq = calcular_forwards_12_meses(ciq, nombres_fwd)
+    # Insertar fechas trimestrales — alinear por tamaño
+    n = min(len(fechas_tri), len(data_ciq))
+    data_ciq = data_ciq.iloc[:n].copy()
+    data_ciq.insert(0, "Fecha", fechas_tri.values[:n])
+    data_ciq.set_index("Fecha", inplace=True)
 
-    return ciq
+    _limpiar_vacios(data_ciq)
+    data_ciq = data_ciq.astype(np.float64)
+
+    # Calcular forwards
+    data_ciq = forwards_one_year(
+        data_ciq,
+        ["Fwd_IQ_NI", "Fwd_IQ_TOTAL_REV", "Fwd_IQ_TOTAL_EQUITY", "Fwd_IQ_EBITDA"]
+    )
+
+    return data_ciq
 
 
-def limpiar_datos_BBG(datos_hoja: pd.DataFrame,
-                       fechas_diarias: pd.Series,
-                       ticker: str) -> pd.DataFrame:
+def LimpiandoBBG(base: pd.DataFrame,
+                  fechas_diarias: pd.Series,
+                  nombre: str) -> pd.DataFrame:
     """
     Extrae y limpia datos diarios de Bloomberg para un ticker.
-
-    Bloomberg aporta: precio (Px_last), Market Cap (CUR_MKT_CAP),
-    Enterprise Value (CURR_ENTP_VAL) y múltiplos diarios.
-    Estas columnas empiezan en la posición 4 de la hoja.
+    Replica exactamente LimpiandoBBG del notebook original.
     """
-    cols    = datos_hoja.loc[:, datos_hoja.iloc[4] == ticker]
-    nombres = cols.iloc[2].tolist()
-    datos   = cols.iloc[5:].copy()
-    datos.columns = nombres
+    data_emp = base.loc[:, base.iloc[4] == nombre]
+    columnas = data_emp.iloc[2].tolist()
+    data_emp_ = data_emp.iloc[5:].copy()
+    data_emp_.columns = columnas
 
-    bbg = datos.iloc[:, 4:].dropna(axis=0, how="all").fillna(0)
-    bbg.insert(0, "Fecha", fechas_diarias.values)
-    bbg = bbg.set_index("Fecha")
-    bbg = _limpiar_vacios(bbg)
-    bbg = bbg.astype(np.float64)
+    # Las columnas BBG empiezan en posición 4
+    data_bbg = data_emp_.iloc[:, 4:].dropna(axis=0, how="all")
+    data_bbg = data_bbg.fillna(0)
 
-    return bbg
+    # Insertar fechas diarias — alinear por tamaño
+    n = min(len(fechas_diarias), len(data_bbg))
+    data_bbg = data_bbg.iloc[:n].copy()
+    data_bbg.insert(0, "Fecha", fechas_diarias.values[:n])
+    data_bbg.set_index("Fecha", inplace=True)
+
+    _limpiar_vacios(data_bbg)
+    data_bbg = data_bbg.apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    return data_bbg
 
 
-def limpiar_datos_indice(datos_hoja: pd.DataFrame,
-                          fechas_diarias: pd.Series,
-                          nombre_indice: str) -> pd.DataFrame:
+def LimpiandoIndices(base: pd.DataFrame,
+                      fechas_diarias: pd.Series,
+                      nombre: str) -> pd.DataFrame:
     """
-    Extrae y limpia datos de un índice bursátil (SPBLPGPT, IBOV, etc.).
-    Los índices tienen el nombre en la fila 3 (no en la 4 como las empresas).
+    Extrae y limpia datos de un índice bursátil.
+    Replica exactamente LimpiandoIndices del notebook original.
+    Los índices usan la fila 3 (no la 4) para identificar el nombre.
     """
-    cols = datos_hoja.loc[:, datos_hoja.iloc[3] == nombre_indice]
-    nombres_fijos = [
-        "PX_LAST", "Trail_PE", "Fwd_PE", "Trail_PS", "Fwd_PS",
-        "Trail_PB", "Fwd_PB", "Trail_EVEBITDA", "Fwd_EVEBITDA"
-    ]
-    datos = cols.iloc[5:].copy()
-    datos.columns = nombres_fijos
-    datos = datos.fillna(0)
-    datos.insert(0, "Fecha", fechas_diarias.values)
-    datos = datos.set_index("Fecha")
-    datos = _limpiar_vacios(datos)
-    datos = datos.astype(np.float64)
+    data_idx = base.loc[:, base.iloc[3] == nombre]
+    columnas = ["PX_LAST", "Trail_PE", "Fwd_PE", "Trail_PS", "Fwd_PS",
+                "Trail_PB", "Fwd_PB", "Trail_EVEBITDA", "Fwd_EVEBITDA"]
+    data_idx = data_idx.iloc[5:].copy()
+    data_idx.columns = columnas
+    data_idx = data_idx.fillna(0)
 
-    return datos
+    n = min(len(fechas_diarias), len(data_idx))
+    data_idx = data_idx.iloc[:n].copy()
+    data_idx.insert(0, "Fecha", fechas_diarias.values[:n])
+    data_idx.set_index("Fecha", inplace=True)
+
+    _limpiar_vacios(data_idx)
+    data_idx = data_idx.astype(np.float64)
+
+    return data_idx
 
 
 # ==============================================================================
-# SECCIÓN 10: CÁLCULO DE MÚLTIPLOS DE VALORIZACIÓN
+# SECCIÓN 8: CÁLCULO DE MÚLTIPLOS (fiel al notebook original)
 # ==============================================================================
 
-def calcular_multiplos(ticker: str, datos_bbg: dict,
-                        datos_ciq: dict, fechas_nuevas: pd.Index) -> pd.DataFrame:
+def multiplos(activo: str,
+              datos_bbg: dict,
+              datos_ciq: dict,
+              fechas_nuevas: pd.Index) -> pd.DataFrame:
     """
-    Calcula los 8 múltiplos de valorización para una empresa.
+    Calcula los 8 múltiplos de valorización.
+    Replica exactamente la función multiplos() del notebook original:
+    - Convierte BBG diario a Period Q con dt.to_period('Q')
+    - Divide con CIQ trimestral (también en Period Q)
+    - Reasigna Fechas_Nuevas (el índice diario original) como índice final
 
-    ¿Qué es un múltiplo?
-        Relaciona el precio que el mercado paga por una empresa (Market Cap o
-        Enterprise Value) con una métrica fundamental (ganancias, ventas, etc.).
-        Ejemplo: P/E = 15x significa que el mercado paga $15 por cada $1 de utilidad.
+    Esto produce una serie diaria donde cada día lleva el múltiplo
+    del último trimestre cerrado de su período Q.
 
-    Los datos CIQ son trimestrales y los BBG son diarios. Para combinarlos se
-    convierten ambos a periodicidad trimestral con dt.to_period('Q').
-
-    Múltiplos calculados:
-        Trail P/E      → Market Cap / Net Income (últimos 12 meses reportados)
-        Fwd P/E        → Market Cap / Net Income (estimado próximos 12 meses)
-        Trail P/S      → Market Cap / Ventas (trailing)
-        Fwd P/S        → Market Cap / Ventas (forward)
-        Trail P/B      → Market Cap / Book Value (trailing)
-        Fwd P/B        → Market Cap / Book Value (forward)
-        Trail EV/EBITDA → Enterprise Value / EBITDA (trailing)
-        Fwd EV/EBITDA  → Enterprise Value / EBITDA (forward)
+    ROBUSTEZ ANTE MÚLTIPLOS CON DISTINTO HORIZONTE TEMPORAL:
+    Si un múltiplo (por ejemplo Trail_EVEBITDA) solo tiene datos a partir
+    de una fecha posterior a la de otros múltiplos, su columna de resultado
+    contendrá NaN en los periodos anteriores y valores válidos desde que
+    exista el insumo. Esto se logra usando pd.concat(axis=1) con join='outer'
+    en lugar de forzar un índice común, y reasignando fechas_nuevas como
+    índice final solo en los periodos que el ratio pudo calcularse.
+    Las filas donde el denominador CIQ es 0 (sin dato) producen NaN
+    en el resultado, que se convierte en 0 solo donde ambas series
+    (numerador y denominador) son simultáneamente válidas.
     """
 
-    def bbg_trim(col: str) -> pd.Series:
-        """Convierte una columna diaria de BBG a frecuencia trimestral."""
-        s = datos_bbg[ticker][col].reset_index()
+    def _a_period_q(serie: pd.Series) -> pd.Series:
+        """Convierte índice de una Serie a Period Q."""
+        s = serie.reset_index()
+        s.columns = ["Fecha", serie.name if serie.name else "val"]
         s["Fecha"] = s["Fecha"].dt.to_period("Q")
-        return s.set_index("Fecha").squeeze()
+        s = s.set_index("Fecha").squeeze()
+        return s
 
-    def ciq_trim(col: str) -> pd.Series:
-        """Convierte una columna trimestral de CIQ al mismo formato de periodo."""
-        s = datos_ciq[ticker][col].reset_index()
-        s["Fecha"] = s["Fecha"].dt.to_period("Q")
-        return s.set_index("Fecha").squeeze()
+    def _bbg_q(col: str) -> pd.Series:
+        return _a_period_q(datos_bbg[activo][col])
 
-    def ratio(num: pd.Series, den: pd.Series, nombre: str) -> pd.DataFrame:
+    def _ciq_q(col: str) -> pd.Series:
+        s = datos_ciq[activo][col].copy()
+        s.index = pd.DatetimeIndex(s.index).to_period("Q")
+        return s
+
+    def _ratio(num: pd.Series, den: pd.Series, nombre: str) -> pd.DataFrame:
         """
-        Divide numerador/denominador y devuelve un DataFrame con fecha como índice.
-        Los infinitos (divisiones por cero) se reemplazan por 0.
+        Divide numerador/denominador y reasigna el índice diario original.
+
+        Comportamiento ante horizontes distintos:
+        - Donde el denominador CIQ es 0 (sin dato real), el resultado se
+          fija a NaN para distinguir "aún no hay dato" de "ratio = 0".
+        - Los NaN se propagan hacia adelante (ffill dentro del mismo Q)
+          y permanecen NaN donde no hay datos aún, preservando el inicio
+          real de cada múltiplo sin truncar el DataFrame completo.
+        - inf/-inf (división por denominador CIQ ≠ 0 pero trivialmente
+          incorrecto) se reemplaza por 0, igual que el notebook original.
         """
-        df = pd.DataFrame(num / den, columns=[nombre])
-        df["Fecha"] = fechas_nuevas
+        # Convertir 0-denominadores (sin dato) a NaN para no propagar ratio=inf
+        den_clean = den.replace(0, np.nan)
+        ratio = num / den_clean                      # NaN donde no hay CIQ
+        df = pd.DataFrame(ratio, columns=[nombre])
+        df["Fecha"] = fechas_nuevas                  # reasignar índice diario
         df = df.set_index("Fecha")
         df.replace([np.inf, -np.inf], 0, inplace=True)
         return df
 
-    # --- Obtener variables base ---
-    mkt_cap = bbg_trim("CUR_MKT_CAP")
-    ev      = bbg_trim("CURR_ENTP_VAL")
+    ev         = _bbg_q("CURR_ENTP_VAL")
+    market_cap = _bbg_q("CUR_MKT_CAP")
 
-    net_income = ciq_trim("IQ_NI")
-    ventas     = ciq_trim("IQ_TOTAL_REV")
-    book       = ciq_trim("IQ_TOTAL_EQUITY")
-    ebitda     = ciq_trim("IQ_EBITDA")
+    net_income = _ciq_q("IQ_NI")
+    ventas     = _ciq_q("IQ_TOTAL_REV")
+    book       = _ciq_q("IQ_TOTAL_EQUITY")
+    ebitda     = _ciq_q("IQ_EBITDA")
 
-    fwd_ni     = ciq_trim("Fwd_IQ_NI")
-    fwd_ventas = ciq_trim("Fwd_IQ_TOTAL_REV")
-    fwd_book   = ciq_trim("Fwd_IQ_TOTAL_EQUITY")
-    fwd_ebitda = ciq_trim("Fwd_IQ_EBITDA")
+    fwd_ni     = _ciq_q("Fwd_IQ_NI")
+    fwd_ventas = _ciq_q("Fwd_IQ_TOTAL_REV")
+    fwd_book   = _ciq_q("Fwd_IQ_TOTAL_EQUITY")
+    fwd_ebitda = _ciq_q("Fwd_IQ_EBITDA")
 
-    # --- Calcular los 8 múltiplos ---
-    return pd.concat([
-        ratio(mkt_cap, net_income,  "Trail_PE"),
-        ratio(mkt_cap, fwd_ni,      "Fwd_PE"),
-        ratio(mkt_cap, ventas,      "Trail_PS"),
-        ratio(mkt_cap, fwd_ventas,  "Fwd_PS"),
-        ratio(mkt_cap, book,        "Trail_PB"),
-        ratio(mkt_cap, fwd_book,    "Fwd_PB"),
-        ratio(ev,      ebitda,      "Trail_EVEBITDA"),
-        ratio(mkt_cap, fwd_ebitda,  "Fwd_EVEBITDA"),
-    ], axis=1)
+    trail_pe      = _ratio(market_cap, net_income,  "Trail_PE")
+    fwd_pe        = _ratio(market_cap, fwd_ni,      "Fwd_PE")
+    trail_ps      = _ratio(market_cap, ventas,      "Trail_PS")
+    fwd_ps        = _ratio(market_cap, fwd_ventas,  "Fwd_PS")
+    trail_pb      = _ratio(market_cap, book,        "Trail_PB")
+    fwd_pb        = _ratio(market_cap, fwd_book,    "Fwd_PB")
+    trail_evebita = _ratio(ev,         ebitda,      "Trail_EVEBITDA")
+    fwd_evebitda  = _ratio(market_cap, fwd_ebitda,  "Fwd_EVEBITDA")
+
+    # join='outer' garantiza que una columna con inicio tardío (más NaN al
+    # principio) no elimine filas de las columnas con historia más larga.
+    return pd.concat(
+        [trail_pe, fwd_pe, trail_ps, fwd_ps,
+         trail_pb, fwd_pb, trail_evebita, fwd_evebitda],
+        axis=1, join="outer"
+    )
 
 
 # ==============================================================================
-# SECCIÓN 11: CÁLCULO DE Z-SCORES
+# SECCIÓN 9: Z-SCORES (fiel al notebook original)
 # ==============================================================================
 
-def calcular_z_rolling(serie: pd.DataFrame, anios: int) -> pd.DataFrame:
+def Z(prueba_z: pd.DataFrame, anios: int) -> pd.DataFrame:
     """
-    Calcula el Z-score con ventana deslizante (rolling) de N años.
-
-    ¿Qué es el Z-score?
-        Mide cuántas desviaciones estándar está el valor actual
-        respecto al promedio histórico de la ventana.
-            Z > 0 → el activo está caro vs su historia
-            Z < 0 → el activo está barato vs su historia
-            Z = 0 → está en línea con su promedio histórico
-
-    La ventana es de anios × 260 días (aproximando días hábiles por año).
-    Se requiere la ventana completa (min_periods=ventana) para evitar
-    Z-scores al inicio de la serie donde no hay suficiente historia.
+    Rolling Z-score con ventana de anios × 260 días hábiles.
+    Replica exactamente la función Z() del notebook original.
     """
-    serie.index = pd.to_datetime(serie.index)
-    ventana = anios * 260
-
-    media  = serie.rolling(window=ventana, min_periods=ventana).mean()
-    desvio = serie.rolling(window=ventana, min_periods=ventana).std()
-
-    return (serie - media) / desvio
+    prueba_z.index = pd.to_datetime(prueba_z.index)
+    window = anios * 260
+    media  = prueba_z.rolling(window=window, min_periods=window).mean()
+    std    = prueba_z.rolling(window=window, min_periods=window).std()
+    return (prueba_z - media) / std
 
 
-def calcular_z_final(multiplos_empresa: pd.DataFrame,
-                      es_financiera: bool) -> pd.Series:
+def Creacion_Z_Final(prueba_z: pd.DataFrame, es_finan: bool) -> pd.Series:
     """
-    Combina los Z-scores de múltiples ventanas temporales en un único Z-score
-    compuesto, ponderado por tipo de múltiplo.
-
-    Pasos:
-        1. Calcula el Z-score rolling para cada ventana (1, 3, 5, 10 años).
-        2. Pondera cada ventana según PESOS_Z y los suma.
-        3. Recorta la serie desde la primera fecha con datos válidos
-           (la ventana más larga necesita más historia antes de tener valores).
-        4. Pondera por múltiplo (PESOS_MULT_FINANCIERAS o NO_FINANCIERAS).
-        5. Suma todos los múltiplos ponderados → Z-score escalar por fecha.
-
-    Parámetros:
-        multiplos_empresa : DataFrame con los 8 múltiplos de la empresa
-        es_financiera     : True para empresas financieras (usan P/E, P/S, P/B)
-                            False para no financieras (también usan EV/EBITDA)
+    Combina Z-scores de múltiples ventanas y múltiplos en un Z único.
+    Replica exactamente Creacion_Z_Final del notebook original,
+    incluyendo la lógica de es_finan para elegir los pesos de múltiplos.
     """
-    z_por_ventana = {}
+    matriz_zs = {}
     for i, anios in enumerate(ANIOS_Z):
-        z_por_ventana[anios] = calcular_z_rolling(multiplos_empresa, anios) * PESOS_Z[i]
+        z_i = Z(prueba_z, anios) * PESOS_Z[i]
+        matriz_zs[anios] = z_i
 
-    # Sumar ventanas
-    z_acumulado = pd.DataFrame()
+    # Sumar ventanas (igual que el notebook: fill_value=0 para no propagar NaN)
+    z_acum = pd.DataFrame()
     for anios in ANIOS_Z:
-        if z_acumulado.empty:
-            z_acumulado = z_por_ventana[anios]
+        if z_acum.empty:
+            z_acum = matriz_zs[anios]
         else:
-            z_acumulado = z_acumulado.add(z_por_ventana[anios], fill_value=0)
+            z_acum = z_acum.add(matriz_zs[anios], fill_value=0)
 
-    # Recortar desde donde la ventana más larga con peso > 0 tiene datos
-    idx_max = max((i for i, p in enumerate(PESOS_Z) if p != 0), default=0)
-    primera_fecha = z_por_ventana[ANIOS_Z[idx_max]].dropna(how="all").index[0]
-    z_acumulado = z_acumulado[z_acumulado.index >= primera_fecha]
+    # Encontrar la ventana más larga con peso != 0
+    ubi_mayor = 0
+    for idx, peso in enumerate(reversed(PESOS_Z)):
+        if peso != 0:
+            ubi_mayor = len(PESOS_Z) - 1 - idx
+            break
 
-    # Ponderar por múltiplo y sumar
-    pesos = PESOS_MULT_FINANCIERAS if es_financiera else PESOS_MULT_NO_FINANCIERAS
-    return (z_acumulado * pesos).sum(axis=1)
+    # Recortar desde donde esa ventana tiene datos (igual que el notebook)
+    desde_aqui = matriz_zs[ANIOS_Z[ubi_mayor]].dropna(how="all").index
+    if desde_aqui.empty:
+        # Si no hay suficiente historia, buscar la ventana más corta disponible
+        for anios in ANIOS_Z:
+            desde = matriz_zs[anios].dropna(how="all").index
+            if not desde.empty:
+                desde_aqui = desde
+                break
+
+    if not desde_aqui.empty:
+        z_acum = z_acum.loc[desde_aqui[0]:]
+
+    # Ponderar por múltiplo y colapsar a una sola serie
+    pesos_mult = PESOS_FINAN if es_finan else PESOS_EX_FINAN
+    z_final = (z_acum * pesos_mult).sum(axis=1)
+    return z_final
 
 
 # ==============================================================================
-# SECCIÓN 12: CONSTRUCCIÓN DE BASKETS (PROMEDIOS PONDERADOS POR MARKET CAP)
+# SECCIÓN 10: CÁLCULO DE BASKETS (fiel al notebook original)
 # ==============================================================================
 
-def calcular_basket(lista_comparables: list, todos_multiplos: dict,
-                     market_cap: pd.DataFrame, fechas: pd.Index) -> pd.DataFrame:
+def Creacion_DF_Basket(basket: list,
+                        matriz_multiplos: dict,
+                        market_cap: pd.DataFrame,
+                        fechas_diarias: pd.Index) -> pd.DataFrame:
     """
-    Calcula el múltiplo promedio del grupo de empresas comparables (basket),
-    ponderado por Market Cap de cada empresa.
-
-    ¿Para qué sirve?
-        Permite comparar la valorización de una empresa vs su sector.
-        Por ejemplo: ¿está BAP cara o barata respecto a los bancos de la región?
-
-    Proceso:
-        1. Para cada empresa del basket, extrae sus 8 múltiplos.
-        2. Calcula el peso de cada empresa = su MktCap / MktCap total del basket.
-        3. Multiplica múltiplo × peso para cada empresa y suma → múltiplo del basket.
-
-    Nota: el basket se calcula dentro del loop (recalculando pesos en cada iteración)
-          para que los pesos se actualicen con datos nuevos automáticamente.
+    Calcula el múltiplo ponderado por Market Cap del basket de comparables.
+    Replica exactamente Creacion_DF_Basket del notebook original.
     """
     nombres_mult = [
         "Trail_PE", "Fwd_PE", "Trail_PS", "Fwd_PS",
         "Trail_PB", "Fwd_PB", "Trail_EVEBITDA", "Fwd_EVEBITDA"
     ]
 
-    dfs = {m: pd.DataFrame(index=fechas) for m in nombres_mult}
+    # Filtrar comparables que existan en la matriz
+    basket_valido = [t for t in basket if t in matriz_multiplos]
+    if not basket_valido:
+        return pd.DataFrame(0, index=fechas_diarias, columns=nombres_mult)
 
-    for ticker in lista_comparables:
+    df_basket = pd.DataFrame(index=fechas_diarias)
+
+    dfs = {m: pd.DataFrame(index=fechas_diarias) for m in nombres_mult}
+    for ticker in basket_valido:
         for mult in nombres_mult:
-            temp = pd.DataFrame(todos_multiplos[ticker][mult])
-            temp.rename(columns={mult: ticker}, inplace=True)
-            dfs[mult] = pd.concat([dfs[mult], temp], axis=1)
+            if mult in matriz_multiplos[ticker].columns:
+                temp = pd.DataFrame(matriz_multiplos[ticker][mult])
+                temp.rename(columns={mult: ticker}, inplace=True)
+                dfs[mult] = pd.concat([dfs[mult], temp], axis=1, sort=False)
 
-    # Pesos basados en Market Cap (se recalculan diario)
-    mc = market_cap[lista_comparables]
+    # Pesos por Market Cap (solo comparables presentes en market_cap)
+    mc_cols = [t for t in basket_valido if t in market_cap.columns]
+    if not mc_cols:
+        return pd.DataFrame(0, index=fechas_diarias, columns=nombres_mult)
+
+    mc = market_cap[mc_cols]
     pesos = mc.div(mc.sum(axis=1), axis=0)
 
-    resultado = pd.DataFrame(index=fechas)
     for mult in nombres_mult:
-        resultado[mult] = pesos.multiply(dfs[mult]).sum(axis=1)
-
-    return resultado
-
-
-# ==============================================================================
-# SECCIÓN 13: ESCRITURA EN EXCEL (openpyxl, sin xlwings)
-# ==============================================================================
-
-def escribir_dataframe_en_excel(ruta: str, nombre_hoja: str,
-                                 datos: pd.DataFrame,
-                                 incluir_indice: bool = True) -> None:
-    """
-    Escribe un DataFrame en una hoja de un archivo Excel existente (.xlsm/.xlsx).
-
-    Se usa openpyxl directamente (sin xlwings) para máxima compatibilidad:
-        ✓ Funciona en Spyder
-        ✓ Funciona en PyCharm
-        ✓ Funciona sin tener Excel instalado
-        ✓ No rompe el kernel
-
-    IMPORTANTE: Esta función reemplaza el contenido de la hoja (la limpia
-    primero y luego escribe). No modifica las macros ni otras hojas del archivo.
-
-    Si el archivo es .xlsm (con macros), openpyxl lo lee y escribe
-    correctamente sin borrar las macros.
-
-    Parámetros:
-        ruta          : ruta completa al archivo Excel
-        nombre_hoja   : nombre de la pestaña donde se escribe
-        datos         : DataFrame a escribir
-        incluir_indice: si True, escribe el índice como primera columna
-    """
-    try:
-        wb = load_workbook(ruta, keep_vba=True)   # keep_vba=True preserva las macros
-
-        # Si la hoja existe la limpiamos; si no, la creamos
-        if nombre_hoja in wb.sheetnames:
-            ws = wb[nombre_hoja]
-            ws.delete_rows(1, ws.max_row)   # borrar contenido previo
+        cols_disp = [c for c in mc_cols if c in dfs[mult].columns]
+        if cols_disp:
+            df_basket[mult] = pesos[cols_disp].multiply(dfs[mult][cols_disp]).sum(axis=1)
         else:
-            ws = wb.create_sheet(nombre_hoja)
+            df_basket[mult] = 0.0
 
-        # Preparar DataFrame: resetear índice si se quiere incluir
-        if incluir_indice:
-            df_export = datos.reset_index()
-        else:
-            df_export = datos.reset_index(drop=True)
-
-        # Escribir encabezados
-        for col_idx, col_name in enumerate(df_export.columns, start=1):
-            ws.cell(row=1, column=col_idx, value=str(col_name))
-
-        # Escribir datos fila por fila
-        for row_idx, row in enumerate(df_export.itertuples(index=False), start=2):
-            for col_idx, valor in enumerate(row, start=1):
-                # Convertir tipos no serializables por openpyxl
-                if isinstance(valor, (pd.Timestamp, datetime.datetime)):
-                    valor = valor.to_pydatetime()
-                elif isinstance(valor, (np.integer,)):
-                    valor = int(valor)
-                elif isinstance(valor, (np.floating,)):
-                    valor = float(valor)
-                elif pd.isna(valor) if not isinstance(valor, str) else False:
-                    valor = None
-                ws.cell(row=row_idx, column=col_idx, value=valor)
-
-        wb.save(ruta)
-        print(f"  ✓ Escrito: {os.path.basename(ruta)} → hoja '{nombre_hoja}'")
-
-    except PermissionError:
-        print(f"  ✗ Error: el archivo está abierto en Excel. Ciérralo y vuelve a correr.")
-    except Exception as e:
-        print(f"  ✗ Error al escribir en {ruta} [{nombre_hoja}]: {e}")
+    return df_basket
 
 
 # ==============================================================================
-# SECCIÓN 14: EXPORTAR HISTÓRICO DE MÚLTIPLOS POR GICS
+# SECCIÓN 11: EXPORTAR HISTÓRICO DE MÚLTIPLOS POR GICS
 # ==============================================================================
 
 def exportar_multiplos_historicos(todos_multiplos: dict,
                                    ruta_zoda: str,
                                    ruta_salida: str) -> None:
     """
-    Crea el archivo Multiplos_hist.xlsx con una pestaña por sector GICS.
-
-    Proceso:
-        1. Lee la hoja "GICS" de ZODA.xlsm para mapear ticker → empresa y sector.
-        2. Concatena los múltiplos trailing de todas las empresas.
-        3. Convierte a formato pivotado (filas=Fecha, columnas=Empresa+Múltiplo).
-        4. Escribe una pestaña por sector en el Excel de salida.
+    Crea Multiplos_hist.xlsx con una pestaña por sector GICS.
+    Incluye TODOS los múltiplos (trailing + forward).
     """
     print("  → Exportando histórico de múltiplos por sector GICS...")
 
@@ -742,22 +582,24 @@ def exportar_multiplos_historicos(todos_multiplos: dict,
 
     concat = pd.concat(todos_multiplos, names=["Activo", "Fecha"]).reset_index()
 
-    cols_trail = [
-        c for c in concat.columns
-        if c not in ("Activo", "Fecha") and not str(c).lower().startswith("fwd_")
-    ]
+    # Incluir TODOS los múltiplos (trailing y forward)
+    cols_mult = [c for c in concat.columns if c not in ("Activo", "Fecha")]
 
-    largo = concat.melt(id_vars=["Activo", "Fecha"],
-                        value_vars=cols_trail,
-                        var_name="Multiplo", value_name="Valor")
-    largo["Fecha"] = pd.to_datetime(largo["Fecha"], errors="coerce")
-    largo["Valor"] = pd.to_numeric(largo["Valor"], errors="coerce")
+    largo = concat.melt(
+        id_vars=["Activo", "Fecha"],
+        value_vars=cols_mult,
+        var_name="Multiplo", value_name="Valor"
+    )
+    largo["Fecha"]  = pd.to_datetime(largo["Fecha"], errors="coerce")
+    largo["Valor"]  = pd.to_numeric(largo["Valor"],  errors="coerce")
     largo.loc[largo["Valor"] == 0, "Valor"] = np.nan
     largo = largo.dropna(subset=["Valor"]).reset_index(drop=True)
 
-    ancho = (largo
-             .pivot(index="Fecha", columns=["Activo", "Multiplo"], values="Valor")
-             .sort_index(axis=0).sort_index(axis=1))
+    ancho = (
+        largo
+        .pivot(index="Fecha", columns=["Activo", "Multiplo"], values="Valor")
+        .sort_index(axis=0).sort_index(axis=1)
+    )
 
     nuevas_cols = [(mapa_emp.get(a, a), m) for a, m in ancho.columns]
     sectores    = [mapa_gics.get(a, "Sin GICS") for a, _ in ancho.columns]
@@ -770,59 +612,82 @@ def exportar_multiplos_historicos(todos_multiplos: dict,
 
     with pd.ExcelWriter(ruta_salida, engine="openpyxl") as writer:
         for sector in sorted(df_sec["GICS"].unique()):
-            empresas_sector = df_sec.loc[df_sec["GICS"] == sector, "Empresa"]
-            cols_sector = [c for c in ancho.columns if c[0] in empresas_sector.values]
-            ancho[cols_sector].to_excel(writer, sheet_name=str(sector)[:31])
+            emps = df_sec.loc[df_sec["GICS"] == sector, "Empresa"]
+            cols_sec = [c for c in ancho.columns if c[0] in emps.values]
+            ancho[cols_sec].to_excel(writer, sheet_name=str(sector)[:31])
 
     print(f"  ✓ Guardado: {ruta_salida}")
 
 
 # ==============================================================================
-# SECCIÓN 15: PREPARAR MÚLTIPLOS PARA EXCEL DE PRESENTACIONES
+# SECCIÓN 12: EXPORTAR MÚLTIPLOS COMPARABLES (para red)
 # ==============================================================================
 
-def preparar_multiplos_trimestrales(todos_multiplos: dict, todos_baskets: dict,
-                                     todas_empresas: list,
-                                     fechas_trimestrales: pd.Series,
-                                     fechas_diarias: pd.Index) -> pd.DataFrame:
+def exportar_multiplos_comparables(matriz_multiplos: dict,
+                                    matriz_baskets: dict,
+                                    todas_empresas: list,
+                                    fechas_tri: pd.Series,
+                                    fechas_diarias: pd.Index,
+                                    ruta_salida: str) -> None:
     """
-    Combina múltiplos de empresa y basket en un DataFrame trimestral
-    para exportar al Excel de presentaciones semestrales.
-
-    Retorna columnas con formato:
-        "{ticker}_{multiplo}"          → múltiplo de la empresa
-        "{ticker}_basket_{multiplo}"   → múltiplo del basket de comparables
+    Exporta múltiplos trimestrales de empresa y basket al Excel de red.
+    Replica la lógica de combinado + combinado_basket del notebook.
     """
-    partes        = []
-    partes_basket = []
 
-    for ticker in todas_empresas:
-        if ticker in todos_multiplos:
-            df = todos_multiplos[ticker].fillna(0).copy()
-            df.columns = [f"{ticker}_{c}" for c in df.columns]
-            partes.append(df)
+    def _appendar(df, combinado, prefijo):
+        df2 = df.copy()
+        df2.columns = [f"{prefijo}_{col}" for col in df2.columns]
+        return pd.concat([combinado, df2], axis=1, sort=False)
 
-        if ticker in todos_baskets:
-            db = todos_baskets[ticker].fillna(0).copy()
-            db.columns = [f"{ticker}_basket_{c}" for c in db.columns]
-            partes_basket.append(db)
-
-    combinado = pd.concat(partes + partes_basket, axis=1)
-
-    # Alinear fechas diarias a trimestrales (tomar el dato del día más cercano anterior)
+    # Alinear a fechas trimestrales
     fechas_d_sorted = pd.DatetimeIndex(fechas_diarias).sort_values()
-    fechas_q_alineadas = [fechas_d_sorted.asof(q) for q in fechas_trimestrales]
+    fechas_q_alineadas = [fechas_d_sorted.asof(q) for q in fechas_tri]
 
-    return combinado.reindex(fechas_q_alineadas)
+    combinado = pd.DataFrame()
+    for t in todas_empresas:
+        if t in matriz_multiplos:
+            combinado = _appendar(
+                matriz_multiplos[t].fillna(0).reindex(fechas_q_alineadas),
+                combinado, t
+            )
+
+    combinado_basket = pd.DataFrame()
+    for t in todas_empresas:
+        if t in matriz_baskets:
+            combinado_basket = _appendar(
+                matriz_baskets[t].fillna(0).reindex(fechas_q_alineadas),
+                combinado_basket, t
+            )
+
+    combinado_final = pd.concat([combinado, combinado_basket], axis=1, sort=False)
+
+    try:
+        wb = load_workbook(ruta_salida, keep_vba=True)
+        ws = wb["Multiplos"] if "Multiplos" in wb.sheetnames else wb.create_sheet("Multiplos")
+        ws.delete_rows(1, ws.max_row)
+
+        df_exp = combinado_final.reset_index()
+        for ci, cn in enumerate(df_exp.columns, 1):
+            ws.cell(row=1, column=ci, value=str(cn))
+        for ri, row in enumerate(df_exp.itertuples(index=False), 2):
+            for ci, val in enumerate(row, 1):
+                if isinstance(val, pd.Timestamp):
+                    val = val.to_pydatetime()
+                elif isinstance(val, float) and np.isnan(val):
+                    val = None
+                ws.cell(row=ri, column=ci, value=val)
+        wb.save(ruta_salida)
+        print(f"  ✓ Escrito en red: {ruta_salida}")
+    except Exception as e:
+        print(f"  ✗ Error al escribir en red: {e}")
 
 
 # ==============================================================================
-# SECCIÓN 16: GRÁFICOS DE EVOLUCIÓN Z-SCORE Y MÚLTIPLOS
+# SECCIÓN 13: GENERACIÓN DE PDF (matplotlib)
 # ==============================================================================
 
-# Mapeo de nombre interno de columna → título estético para el PDF
-# Se usa en todos los subgráficos de múltiplos.
-TITULOS_MULTIPLOS = {
+# Mapeo nombre interno → título estético para el PDF
+_TITULOS_MULT = {
     "Trail_PE":       "Trail P/E",
     "Fwd_PE":         "Forward P/E",
     "Trail_PS":       "Trail P/S",
@@ -833,469 +698,532 @@ TITULOS_MULTIPLOS = {
     "Fwd_EVEBITDA":   "Forward EV/EBITDA",
 }
 
-# Umbral: un múltiplo se considera "vacío" si más del 95% de sus valores
-# son cero o NaN. En ese caso NO se grafica (evita plots planos sin sentido).
-UMBRAL_DATOS_VALIDOS = 0.05
+# Colores corporativos
+_C_LINEA = "#3e63ad"   # azul principal
+_C_HIST  = "#00cdcd"   # cyan  → promedio histórico completo
+_C_ANIO  = "#b0b0b0"   # gris  → promedio último año (~260 días hábiles)
+_C_FONDO = "white"
+
+# Un múltiplo se grafica solo si al menos este % de sus valores son
+# distintos de 0 y NaN dentro del horizonte de análisis. Evita plots planos.
+_UMBRAL_DATOS = 0.05
 
 
-def _promedio_ultimo_anio(serie: pd.Series) -> float:
-    """
-    Promedio de los últimos ~260 datos hábiles (≈ 1 año).
-    Si la serie tiene menos de 260 puntos, usa todos los disponibles.
-    """
+def _prom_ultimo_anio(serie: pd.Series) -> float:
+    """Promedio de los últimos ~260 puntos hábiles (≈ 1 año)."""
     return serie.iloc[-260:].mean() if len(serie) >= 260 else serie.mean()
 
 
-def _tiene_datos_reales(serie: pd.Series) -> bool:
+def _tiene_datos(serie: pd.Series) -> bool:
     """
-    Determina si un múltiplo tiene suficientes datos válidos para graficar.
-
-    Un múltiplo se considera vacío (y NO se grafica) cuando prácticamente
-    todos sus valores son 0 o NaN. Esto ocurre típicamente con Trail/Fwd
-    EV/EBITDA en empresas financieras donde esa métrica no aplica.
-
-    Retorna True si hay suficientes datos, False si el plot estaría vacío.
+    True si la serie tiene suficientes valores reales para graficar.
+    Descarta múltiplos donde Bloomberg/CIQ no reportan esa métrica
+    (ej. EV/EBITDA en bancos → vector mayoritariamente ceros/NaN).
     """
-    datos_limpios = serie.replace(0, np.nan).dropna()
-    if len(serie) == 0:
-        return False
-    proporcion_valida = len(datos_limpios) / len(serie)
-    return proporcion_valida >= UMBRAL_DATOS_VALIDOS
+    limpios = serie.replace(0, np.nan).dropna()
+    return len(limpios) / max(len(serie), 1) >= _UMBRAL_DATOS
 
 
-def _formatear_eje_x(ax, fecha_min: pd.Timestamp, fecha_max: pd.Timestamp,
-                      intervalo_meses: int = 3) -> None:
+def _formato_eje_x(ax, fecha_min, fecha_max):
     """
-    Aplica formato estético al eje X de un subgráfico:
-        - Marcas cada N meses (por defecto cada 3 → trimestral)
-        - Formato 'Mmm-YY' (ej. Apr-16, Jul-22, Jan-26)
-        - Etiquetas rotadas 90° para evitar solapamiento
-        - Límite fijo [fecha_min, fecha_max]
-
-    El intervalo se ajusta automáticamente si el horizonte es muy largo,
-    para no saturar el eje con demasiadas etiquetas.
+    Aplica formato 'Mmm-YY' al eje X (Apr-16, Jul-22, Jan-26).
+    Ajusta el intervalo automáticamente según el horizonte temporal.
     """
-    # Ajustar intervalo automáticamente según el horizonte temporal
-    n_anios = (fecha_max - fecha_min).days / 365
-    if n_anios > 8:
-        intervalo_meses = 6
-    elif n_anios > 5:
-        intervalo_meses = 4
-
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=intervalo_meses))
+    import matplotlib.dates as mdates
+    n_anios = (fecha_max - fecha_min).days / 365.25
+    intervalo = 6 if n_anios > 8 else (4 if n_anios > 5 else 3)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=intervalo))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b-%y"))
     ax.tick_params(axis="x", rotation=90, labelsize=7)
     ax.set_xlim([fecha_min, fecha_max])
 
 
-def graficar_empresa(df_z: pd.DataFrame, todos_multiplos: dict,
-                      ticker: str, fecha_inicio: pd.Timestamp) -> plt.Figure:
+def _grafico_empresa(df_z: pd.DataFrame,
+                     mult: dict,
+                     empresa: str,
+                     fecha_inicio: pd.Timestamp):
     """
-    Genera la página del PDF para una empresa con el siguiente layout:
+    Construye la página del PDF para una empresa con el layout:
 
-        Fila 1 (ancho completo): Evolución Z-Score Compuesto
-        Fila 2: Trail P/E  |  Forward P/E
-        Fila 3: Trail P/S  |  Forward P/S
-        Fila 4: Trail P/B  |  Forward P/B
-        Fila 5: Trail EV/EBITDA  |  Forward EV/EBITDA   ← solo si tienen datos
+        Fila 0  (ancho completo): Evolución Z-Score Compuesto
+        Fila 1  col-0: Trail P/E        col-1: Forward P/E
+        Fila 2  col-0: Trail P/S        col-1: Forward P/S
+        Fila 3  col-0: Trail P/B        col-1: Forward P/B
+        Fila 4  col-0: Trail EV/EBITDA  col-1: Forward EV/EBITDA
+                (estas últimas solo aparecen si tienen datos reales)
 
-    Reglas de diseño:
-        - Fondo blanco (#FFFFFF) en figura y todos los ejes
-        - Exactamente 2 plots por fila de múltiplos
-        - Los múltiplos con >95% de ceros/NaN NO se muestran (eviatar plots vacíos)
-        - Cada múltiplo usa su propio horizonte temporal real (respeta la
-          disponibilidad de datos de cada serie de forma independiente)
-        - Eje X con formato 'Mmm-YY' (Apr-16, Jul-22, Jan-26...)
-        - Línea azul: valor del múltiplo
-        - Línea cyan (--): promedio histórico completo de la serie
-        - Línea gris (--): promedio del último año disponible
-
-    Parámetros:
-        df_z        : DataFrame con la columna "Z_{ticker}" (Z-score compuesto)
-        todos_mult  : diccionario {ticker: DataFrame con los 8 múltiplos}
-        ticker      : identificador de la empresa (ej. "BAP US Equity")
-        fecha_inicio: fecha mínima de referencia (los plots arrancan desde
-                      su primer dato real, nunca antes de esta fecha)
-
-    Retorna:
-        Figura matplotlib lista para insertar en el PDF con pdf.savefig()
+    Reglas:
+      - Fondo blanco en figura y en todos los ejes.
+      - Exactamente 2 subplots de múltiplos por fila.
+      - El Z-score ocupa la fila superior completa.
+      - Múltiplos vacíos (>95 % ceros/NaN) se omiten.
+      - Cada múltiplo usa su propio horizonte temporal: si Trail_EVEBITDA
+        solo tiene datos desde 2013, arranca desde 2013 sin afectar
+        a los demás múltiplos que arrancan desde 2011.
+      - Eje X: formato 'Mmm-YY' (Apr-16, Jul-22, Jan-26).
+      - Líneas de referencia:
+            cyan  (--): promedio histórico completo de la serie
+            gris  (--): promedio del último año disponible
     """
-    mult = todos_multiplos[ticker]
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    import matplotlib.lines as mlines
 
-    # Paleta corporativa
-    COLOR_LINEA      = "#3e63ad"   # azul principal
-    COLOR_HIST       = "#00cdcd"   # cyan = promedio histórico
-    COLOR_ULTIMO_AIO = "#b0b0b0"   # gris = promedio último año
-    COLOR_FONDO      = "white"
+    df_mult = mult[empresa]
 
-    # ── Determinar qué múltiplos tienen datos reales ──────────────────────────
-    # Se evalúa cada columna individualmente. Un múltiplo se incluye si
-    # supera el umbral de datos válidos DENTRO del horizonte solicitado.
-    multiplos_con_datos = []
-    for col, titulo in TITULOS_MULTIPLOS.items():
-        if col not in mult.columns:
-            continue
-        serie_col = mult[col][fecha_inicio:]
-        if _tiene_datos_reales(serie_col):
-            multiplos_con_datos.append((col, titulo))
-
-    # ── Calcular número de filas necesarias ───────────────────────────────────
-    # Fila 1 siempre = Z-score (fila completa)
-    # Las filas siguientes alojan los múltiplos de 2 en 2
-    n_multiplos = len(multiplos_con_datos)
-    n_filas_mult = (n_multiplos + 1) // 2   # redondeo hacia arriba
-    n_filas_total = 1 + n_filas_mult         # fila Z + filas de múltiplos
-
-    # Alto dinámico: cada fila mide ~3.5 pulgadas para que los plots respiren
-    alto_figura = max(10, n_filas_total * 3.5)
-
-    # ── Crear figura con fondo blanco ─────────────────────────────────────────
-    fig = plt.figure(figsize=(15, alto_figura), facecolor=COLOR_FONDO)
-
-    # Leyenda global en la esquina superior derecha (fuera de los ejes)
-    leyenda_items = [
-        plt.Line2D([0], [0], color=COLOR_HIST,       linestyle="--",
-                   linewidth=2, label="Promedio Histórico"),
-        plt.Line2D([0], [0], color=COLOR_ULTIMO_AIO, linestyle="--",
-                   linewidth=2, label="Promedio Último Año"),
+    # ── Determinar qué múltiplos tienen datos reales ──────────────────────
+    multiplos_activos = [
+        (col, titulo)
+        for col, titulo in _TITULOS_MULT.items()
+        if col in df_mult.columns
+        and _tiene_datos(df_mult[col][fecha_inicio:].replace(np.nan, 0))
     ]
-    fig.legend(handles=leyenda_items, loc="upper right",
-               fontsize=9, frameon=True, framealpha=0.9)
 
-    # Título de la página = ticker de la empresa (esquina superior izquierda)
-    fig.text(0.01, 0.995, ticker, fontsize=13, fontweight="bold",
+    n_mult    = len(multiplos_activos)
+    n_filas_m = (n_mult + 1) // 2          # filas de múltiplos (2 por fila)
+    n_filas   = 1 + n_filas_m              # fila Z + filas de múltiplos
+    alto      = max(9, n_filas * 3.4)
+
+    # ── Crear figura con fondo blanco ─────────────────────────────────────
+    fig = plt.figure(figsize=(15, alto), facecolor=_C_FONDO)
+
+    # Título de la empresa
+    fig.text(0.01, 0.995, empresa, fontsize=12, fontweight="bold",
              va="top", ha="left", color="#1a1a2e")
 
-    # ── GridSpec: 1 columna para el Z (toda la fila) + 2 columnas para múltiplos
-    import matplotlib.gridspec as gridspec
+    # Leyenda global
+    leyenda = [
+        mlines.Line2D([], [], color=_C_HIST, linestyle="--",
+                      linewidth=2, label="Promedio Histórico"),
+        mlines.Line2D([], [], color=_C_ANIO, linestyle="--",
+                      linewidth=2, label="Promedio Último Año"),
+    ]
+    fig.legend(handles=leyenda, loc="upper right", fontsize=8,
+               frameon=True, framealpha=0.9)
+
+    # ── GridSpec ──────────────────────────────────────────────────────────
     gs = gridspec.GridSpec(
-        nrows=n_filas_total,
-        ncols=2,
-        figure=fig,
-        hspace=0.72,    # espacio vertical entre filas (deja aire para labels)
-        wspace=0.30,    # espacio horizontal entre columnas
-        top=0.93,
-        bottom=0.04,
-        left=0.06,
-        right=0.97,
+        nrows=n_filas, ncols=2, figure=fig,
+        hspace=0.72, wspace=0.28,
+        top=0.93, bottom=0.04, left=0.06, right=0.97,
     )
 
-    # ── FILA 1: Z-Score (ocupa las 2 columnas) ────────────────────────────────
-    ax_z = fig.add_subplot(gs[0, :])   # gs[fila, columnas 0 y 1]
-    ax_z.set_facecolor(COLOR_FONDO)
+    # ── Fila 0: Z-Score (ocupa ambas columnas) ────────────────────────────
+    ax_z = fig.add_subplot(gs[0, :])
+    ax_z.set_facecolor(_C_FONDO)
 
-    col_z = f"Z_{ticker}"
+    col_z = f"Z_{empresa}"
     if col_z in df_z.columns:
-        z_serie = df_z[col_z][fecha_inicio:].replace(0, np.nan)
-        # Usar el horizonte real del Z (desde primer dato válido)
-        fecha_min_z = z_serie.dropna().index.min() if not z_serie.dropna().empty else fecha_inicio
-        fecha_max_z = df_z[col_z].dropna().index.max()
+        z_serie = df_z[col_z].replace(0, np.nan)
+        z_desde = z_serie[fecha_inicio:].dropna()
+        if not z_desde.empty:
+            f_min_z = z_desde.index.min()
+            f_max_z = z_serie.dropna().index.max()
+            ax_z.plot(z_desde, color=_C_LINEA, linewidth=1.8)
+            ax_z.axhline(0, color="#cccccc", linewidth=0.7, linestyle="-")
+            _formato_eje_x(ax_z, f_min_z, f_max_z)
 
-        ax_z.plot(z_serie, color=COLOR_LINEA, linewidth=1.8)
-        ax_z.axhline(0, color="#cccccc", linewidth=0.8, linestyle="-")  # línea de cero como referencia
-        _formatear_eje_x(ax_z, fecha_min_z, fecha_max_z)
-    else:
-        fecha_min_z = pd.Timestamp(fecha_inicio)
-        fecha_max_z = mult.index.max()
-
-    ax_z.set_title("Evolución Z-Score Compuesto", fontsize=10, fontweight="bold",
-                   pad=6, loc="center")
+    ax_z.set_title("Evolución Z-Score Compuesto", fontsize=10,
+                   fontweight="bold", pad=6)
     ax_z.tick_params(axis="y", labelsize=8)
     ax_z.spines[["top", "right"]].set_visible(False)
 
-    # ── FILAS 2+: Subgráficos de múltiplos (2 por fila) ──────────────────────
-    for i, (col, titulo) in enumerate(multiplos_con_datos):
-        fila   = 1 + i // 2   # empieza en fila 1 (la 0 es el Z)
-        columna = i % 2        # 0 = izquierda, 1 = derecha
+    # ── Filas 1+: Subplots de múltiplos (2 por fila) ──────────────────────
+    for i, (col, titulo) in enumerate(multiplos_activos):
+        fila    = 1 + i // 2
+        columna = i % 2
 
         ax = fig.add_subplot(gs[fila, columna])
-        ax.set_facecolor(COLOR_FONDO)
+        ax.set_facecolor(_C_FONDO)
 
-        # Extraer serie y limpiar: reemplazar 0 por NaN para no distorsionar promedios
-        serie_raw   = mult[col][fecha_inicio:].replace(0, np.nan)
-        serie_clean = serie_raw.dropna()
+        # Usar el horizonte real de este múltiplo (puede diferir de otros).
+        # replace(0, nan) antes de dropna para que los ceros de "sin dato"
+        # no contaminen el cálculo de promedios ni el rango del eje.
+        serie = df_mult[col][fecha_inicio:].replace(0, np.nan).dropna()
 
-        if serie_clean.empty:
+        if serie.empty:
             ax.set_visible(False)
             continue
 
-        # Horizonte real de este múltiplo (independiente de los demás)
-        fecha_min_mult = serie_clean.index.min()
-        fecha_max_mult = serie_clean.index.max()
+        f_min = serie.index.min()   # inicio real de este múltiplo
+        f_max = serie.index.max()   # fin real de este múltiplo
 
-        # Graficar la serie del múltiplo
-        ax.plot(serie_clean, color=COLOR_LINEA, linewidth=1.5)
+        ax.plot(serie, color=_C_LINEA, linewidth=1.5)
+        ax.axhline(serie.mean(),            color=_C_HIST, linestyle="--", linewidth=1.6)
+        ax.axhline(_prom_ultimo_anio(serie), color=_C_ANIO, linestyle="--", linewidth=1.6)
 
-        # Líneas de referencia: promedio histórico y del último año
-        prom_hist    = serie_clean.mean()
-        prom_ult_anio = _promedio_ultimo_anio(serie_clean)
-
-        ax.axhline(prom_hist,     color=COLOR_HIST,       linestyle="--", linewidth=1.6)
-        ax.axhline(prom_ult_anio, color=COLOR_ULTIMO_AIO, linestyle="--", linewidth=1.6)
-
-        # Formato del eje X con el horizonte real de este múltiplo
-        _formatear_eje_x(ax, fecha_min_mult, fecha_max_mult)
-
-        ax.set_title(titulo, fontsize=9, fontweight="bold", pad=5, loc="center")
+        _formato_eje_x(ax, f_min, f_max)
+        ax.set_title(titulo, fontsize=9, fontweight="bold", pad=5)
         ax.tick_params(axis="y", labelsize=8)
         ax.spines[["top", "right"]].set_visible(False)
 
-    # Si el número de múltiplos es impar, ocultar el último subplot vacío
-    if n_multiplos % 2 != 0 and n_multiplos > 0:
-        fila_vacia    = 1 + (n_multiplos - 1) // 2
-        ax_vacio = fig.add_subplot(gs[fila_vacia, 1])
-        ax_vacio.set_visible(False)
+    # Ocultar subplot vacío si n_mult es impar
+    if n_mult % 2 != 0 and n_mult > 0:
+        ax_v = fig.add_subplot(gs[1 + (n_mult - 1) // 2, 1])
+        ax_v.set_visible(False)
 
     return fig
 
 
+def generar_pdf(matriz_multiplos: dict,
+                df_z_fin: pd.DataFrame,
+                df_z_cc: pd.DataFrame,
+                df_z_mu: pd.DataFrame,
+                empresas_fin: list,
+                empresas_cc: list,
+                empresas_mu: list,
+                fecha_hoy: str,
+                ruta_pdf: str) -> None:
+    """
+    Genera el PDF corporativo de evolución de Z-scores y múltiplos.
+
+    Una página por empresa con:
+      - Fondo blanco.
+      - Z-score en fila completa (superior).
+      - Múltiplos de 2 en 2 por fila.
+      - Plots vacíos omitidos automáticamente.
+      - Eje X en formato 'Mmm-YY' (Apr-16, Jul-22, Jan-26).
+      - Horizonte independiente por cada múltiplo: si Trail_EVEBITDA
+        de la empresa Y solo existe desde 2013, su plot arranca en 2013
+        y los demás múltiplos no se ven afectados.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+
+        fecha_inicio = pd.Timestamp("2016-1-1")
+        ruta_archivo = os.path.join(ruta_pdf, f"Evolucion Z y Multiplos {fecha_hoy}.pdf")
+
+        grupos = [
+            (empresas_fin, df_z_fin),
+            (empresas_cc,  df_z_cc),
+            (empresas_mu,  df_z_mu),
+        ]
+
+        with PdfPages(ruta_archivo) as pdf:
+            for lista_emp, df_z in grupos:
+                for empresa in lista_emp:
+                    if empresa not in matriz_multiplos:
+                        continue
+                    fig = _grafico_empresa(df_z, matriz_multiplos, empresa, fecha_inicio)
+                    pdf.savefig(fig, facecolor=fig.get_facecolor())
+                    plt.close(fig)
+
+        print(f"  ✓ PDF generado: {ruta_archivo}")
+    except Exception as e:
+        print(f"  ✗ Error al generar PDF: {e}")
+        print(f"    ¿Existe la carpeta? → {ruta_pdf}")
+
+
 # ==============================================================================
-# SECCIÓN 17: FLUJO PRINCIPAL
+# SECCIÓN 14: MAIN
 # ==============================================================================
 
 def main():
-    """
-    Ejecuta el script completo en 9 pasos secuenciales.
-    Cada paso imprime en consola lo que está haciendo y si tuvo éxito.
-    """
+    inicio = datetime.datetime.now()
+    fecha_hoy = datetime.datetime.today().strftime("%d.%m.%y")
+
     print("=" * 70)
     print("  ZODA — MONITOR DE VALORIZACIÓN AFP INTEGRA")
-    print(f"  Inicio: {INICIO.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"  Inicio: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
     print("=" * 70)
 
     # ──────────────────────────────────────────────────────────────────────────
     # PASO 1: Leer Baskets
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[1/9] Leyendo configuración de Baskets desde ZODA.xlsm...")
-    (
-        todas_finan,      emp_financieras,  basket_financieras,
-        todas_cons_const, emp_cons_const,   basket_cons_const,
-        todas_min_utl,    emp_min_utl,      basket_min_utl,
-    ) = leer_baskets(RUTA_ZODA)
+    (Todas_Finan,    Empresas_Financieras, Basket_Financieras,
+     Todas_Cons_Const, Empresas_Cons_Const, Basket_Cons_Const,
+     Todas_Min_Utl,  Empresas_Min_Utl,    Basket_Min_Utl) = leer_baskets(RUTA_ZODA)
 
-    todas_empresas = todas_finan + todas_cons_const + todas_min_utl
-    print(f"  → {len(emp_financieras)} financieras | "
-          f"{len(emp_cons_const)} Cons/Const | "
-          f"{len(emp_min_utl)} Min/Utl")
+    print(f"  → {len(Empresas_Financieras)} financieras | "
+          f"{len(Empresas_Cons_Const)} Cons/Const | "
+          f"{len(Empresas_Min_Utl)} Min/Utl")
 
     # ──────────────────────────────────────────────────────────────────────────
     # PASO 2: Actualizar DQ_IN
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[2/9] Actualizando base DQ_IN...")
-    dq_in_bd = leer_hoja_excel(RUTA_ZODA,  "DQ_IN", con_encabezado=True)
-    df_qest  = leer_hoja_excel(RUTA_QEST,  "DQ_IN")
-
+    dq_in_bd = leer_hoja_excel(RUTA_ZODA, "DQ_IN", con_encabezado=True)
+    df_qest  = leer_hoja_excel(RUTA_QEST, "DQ_IN")
     base_dq_in = actualizar_DQ_IN(df_qest, dq_in_bd)
     base_dq_in = base_dq_in.reset_index(drop=True)
     base_dq_in.loc[3:, "Fecha"] = pd.to_datetime(
         base_dq_in.loc[3:, "Fecha"], dayfirst=True, errors="coerce"
     )
-    for isin in ISINS_NUMERICOS:
-        if isin in base_dq_in.columns:
-            base_dq_in.loc[3:, isin] = pd.to_numeric(
-                base_dq_in.loc[3:, isin], errors="coerce"
-            )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 3: Leer hojas de datos financieros
+    # PASO 3: Leer hojas de datos
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[3/9] Leyendo datos de Bloomberg y Capital IQ desde ZODA.xlsm...")
-    datos_financials = leer_hoja_excel(RUTA_ZODA, "Financials")
-    datos_min_utl    = leer_hoja_excel(RUTA_ZODA, "Min y Uti")
-    datos_cons_const = leer_hoja_excel(RUTA_ZODA, "Cons y Const")
-    datos_indices    = leer_hoja_excel(RUTA_ZODA, "Indices")
+    Financials_Datos  = leer_hoja_excel(RUTA_ZODA, "Financials")
+    Min_Utl_Datos     = leer_hoja_excel(RUTA_ZODA, "Min y Uti")
+    Cons_Const_Datos  = leer_hoja_excel(RUTA_ZODA, "Cons y Const")
+    Indices_Datos     = leer_hoja_excel(RUTA_ZODA, "Indices")
 
-    # Fechas trimestrales (columna de fecha de la hoja Financials)
-    fechas_tri = pd.to_datetime(
-        datos_financials["column_1"].iloc[5:], errors="coerce"
+    # Fechas trimestrales: column_1 desde fila 5, igual que el notebook
+    Fechas_Tri = pd.to_datetime(
+        Financials_Datos["column_1"].iloc[5:], errors="coerce"
     ).dropna()
 
-    # Fechas diarias: columnas con "Px_last" en fila 2
-    mask_px = datos_financials.iloc[2] == "Px_last"
-    fechas_diarias = pd.to_datetime(
-        datos_financials.loc[5:, mask_px].iloc[:, 0], errors="coerce"
+    # Fechas diarias: primera columna etiquetada "Px_last" en fila 2
+    mask_px = Financials_Datos.iloc[2] == "Px_last"
+    Fechas_Diarias = pd.to_datetime(
+        Financials_Datos.loc[5:, mask_px].iloc[:, 0], errors="coerce"
     ).dropna()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 4: Limpiar datos y calcular múltiplos
+    # PASO 4: Limpiar datos
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[4/9] Limpiando datos y calculando múltiplos de valorización...")
 
-    # Mapa ticker → hoja de datos correspondiente
-    mapa_hojas = (
-        {t: datos_financials for t in todas_finan}
-        | {t: datos_cons_const for t in todas_cons_const}
-        | {t: datos_min_utl    for t in todas_min_utl}
-    )
+    # Solo procesar tickers que realmente existen en su hoja
+    def _existe(hoja, ticker):
+        return (hoja.iloc[4] == ticker).any()
 
-    datos_ciq = {t: limpiar_datos_CIQ(h, fechas_tri,    t) for t, h in mapa_hojas.items()}
-    datos_bbg = {t: limpiar_datos_BBG(h, fechas_diarias, t) for t, h in mapa_hojas.items()}
+    Datos_CIQ, Datos_BBG = {}, {}
+    for t in Todas_Finan:
+        if _existe(Financials_Datos, t):
+            Datos_CIQ[t] = LimpiandoCIQ(Financials_Datos, Fechas_Tri,     t)
+            Datos_BBG[t] = LimpiandoBBG(Financials_Datos, Fechas_Diarias,  t)
+    for t in Todas_Cons_Const:
+        if _existe(Cons_Const_Datos, t):
+            Datos_CIQ[t] = LimpiandoCIQ(Cons_Const_Datos, Fechas_Tri,     t)
+            Datos_BBG[t] = LimpiandoBBG(Cons_Const_Datos, Fechas_Diarias,  t)
+    for t in Todas_Min_Utl:
+        if _existe(Min_Utl_Datos, t):
+            Datos_CIQ[t] = LimpiandoCIQ(Min_Utl_Datos,   Fechas_Tri,     t)
+            Datos_BBG[t] = LimpiandoBBG(Min_Utl_Datos,   Fechas_Diarias,  t)
 
-    datos_indices_limpios = {
-        idx: limpiar_datos_indice(datos_indices, fechas_diarias, idx)
-        for idx in TODAS_INDICES
-    }
+    total_pedidos = len(Todas_Finan) + len(Todas_Cons_Const) + len(Todas_Min_Utl)
+    print(f"  → {len(Datos_BBG)}/{total_pedidos} tickers con datos en el Excel")
 
-    fechas_mult  = datos_bbg[todas_finan[0]].index
-    todos_mult   = {t: calcular_multiplos(t, datos_bbg, datos_ciq, fechas_mult)
-                    for t in mapa_hojas}
-    mult_indices = {idx: datos_indices_limpios[idx].iloc[:, 1:] for idx in TODAS_INDICES}
-
-    print(f"  → Múltiplos calculados para {len(todos_mult)} empresas")
+    # Índices
+    Matriz_Indices = {i: LimpiandoIndices(Indices_Datos, Fechas_Diarias, i)
+                      for i in TODAS_INDICES}
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 5: Calcular Z-scores absolutos
+    # PASO 5: Calcular múltiplos
+    # (Fechas_Nuevas = índice diario de BAP, igual que el notebook original)
+    # ──────────────────────────────────────────────────────────────────────────
+    # Tomar primer ticker disponible como referencia de fechas
+    primer_ticker = next(iter(Datos_BBG))
+    Fechas_Nuevas = Datos_BBG[primer_ticker].index
+
+    Matriz_Multiplos = {}
+    for t in Datos_BBG:
+        try:
+            Matriz_Multiplos[t] = multiplos(t, Datos_BBG, Datos_CIQ, Fechas_Nuevas)
+        except Exception as e:
+            print(f"  ⚠️  {t}: error en múltiplos → {e}")
+
+    # Múltiplos de índices: columnas 1 en adelante (sin PX_LAST)
+    Matriz_Multiplos_Indices = {
+        i: Matriz_Indices[i].iloc[:, 1:] for i in TODAS_INDICES
+    }
+
+    print(f"  → Múltiplos calculados para {len(Matriz_Multiplos)} empresas")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PASO 6: Market Cap para ponderación de baskets
+    # ──────────────────────────────────────────────────────────────────────────
+    market_cap_parts = []
+    for t in Datos_BBG:
+        if "CUR_MKT_CAP" in Datos_BBG[t].columns:
+            temp = pd.DataFrame(Datos_BBG[t]["CUR_MKT_CAP"]).rename(columns={"CUR_MKT_CAP": t})
+            market_cap_parts.append(temp)
+    MarketCap = pd.concat(market_cap_parts, axis=1, sort=False) if market_cap_parts else pd.DataFrame()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PASO 7: Z-scores absolutos (igual que notebook: es_finan como variable global)
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[5/9] Calculando Z-scores...")
 
-    def _z_dict(lista_emp, es_fin):
-        return {f"Z_{e}": pd.DataFrame(
-            calcular_z_final(todos_mult[e], es_fin), columns=[f"Z_{e}"])
-            for e in lista_emp}
+    Matriz_Z_Financieras = {}
+    for t in Empresas_Financieras:
+        if t in Matriz_Multiplos:
+            Matriz_Z_Financieras[f"Z_{t}"] = pd.DataFrame(
+                Creacion_Z_Final(Matriz_Multiplos[t], es_finan=True),
+                columns=[f"Z_{t}"]
+            )
 
-    z_fin  = _z_dict(emp_financieras, True)
-    z_cc   = _z_dict(emp_cons_const,  False)
-    z_mu   = _z_dict(emp_min_utl,     False)
-    z_idx  = {idx: pd.DataFrame(
-        calcular_z_final(mult_indices[idx], False), columns=[idx])
-        for idx in TODAS_INDICES}
+    Matriz_Z_Cons_Const = {}
+    for t in Empresas_Cons_Const:
+        if t in Matriz_Multiplos:
+            Matriz_Z_Cons_Const[f"Z_{t}"] = pd.DataFrame(
+                Creacion_Z_Final(Matriz_Multiplos[t], es_finan=False),
+                columns=[f"Z_{t}"]
+            )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PASO 6: Calcular baskets y Z relativos
-    # ──────────────────────────────────────────────────────────────────────────
-    print("\n[6/9] Calculando Baskets y Z relativos (basket y BVL)...")
+    Matriz_Z_Min_Utl = {}
+    for t in Empresas_Min_Utl:
+        if t in Matriz_Multiplos:
+            Matriz_Z_Min_Utl[f"Z_{t}"] = pd.DataFrame(
+                Creacion_Z_Final(Matriz_Multiplos[t], es_finan=False),
+                columns=[f"Z_{t}"]
+            )
 
-    market_cap = pd.concat(
-        [pd.DataFrame(datos_bbg[t]["CUR_MKT_CAP"]).rename(columns={"CUR_MKT_CAP": t})
-         for t in mapa_hojas], axis=1
-    )
-
-    b_fin = {e: calcular_basket(basket_financieras[e], todos_mult, market_cap, fechas_diarias)
-             for e in emp_financieras}
-    b_cc  = {e: calcular_basket(basket_cons_const[e],  todos_mult, market_cap, fechas_diarias)
-             for e in emp_cons_const}
-    b_mu  = {e: calcular_basket(basket_min_utl[e],     todos_mult, market_cap, fechas_diarias)
-             for e in emp_min_utl}
-
-    def _z_relativo(emp, mult_emp, mult_ref, es_fin, prefijo):
-        ratio = mult_emp.div(mult_ref)
-        return pd.DataFrame(calcular_z_final(ratio, es_fin), columns=[f"{prefijo}_{emp}"])
-
-    bvl = mult_indices["SPBLPGPT Index"]
-
-    z_fin_basket = {f"Z_Basket_{e}": _z_relativo(e, todos_mult[e], b_fin[e], True,  "Z_Basket")
-                    for e in emp_financieras}
-    z_cc_basket  = {f"Z_Basket_{e}": _z_relativo(e, todos_mult[e], b_cc[e],  False, "Z_Basket")
-                    for e in emp_cons_const}
-    z_mu_basket  = {f"Z_Basket_{e}": _z_relativo(e, todos_mult[e], b_mu[e],  False, "Z_Basket")
-                    for e in emp_min_utl}
-
-    z_fin_bvl = {f"Z_BVL_{e}": _z_relativo(e, todos_mult[e], bvl, True,  "Z_BVL")
-                 for e in emp_financieras}
-    z_cc_bvl  = {f"Z_BVL_{e}": _z_relativo(e, todos_mult[e], bvl, False, "Z_BVL")
-                 for e in emp_cons_const}
-    z_mu_bvl  = {f"Z_BVL_{e}": _z_relativo(e, todos_mult[e], bvl, False, "Z_BVL")
-                 for e in emp_min_utl}
-
-    mxla = mult_indices["MXLA Index"]
-    z_idx_mxla = {}
-    for idx in TODAS_INDICES:
-        if idx == "MXLA Index":
-            break
-        z_idx_mxla[f"Z_MXLA_{idx}"] = pd.DataFrame(
-            calcular_z_final(mult_indices[idx].div(mxla), False),
-            columns=[f"Z_MXLA_{idx}"]
+    # Z-scores de índices
+    Matriz_Z_Indices = {}
+    for i in TODAS_INDICES:
+        Matriz_Z_Indices[i] = pd.DataFrame(
+            Creacion_Z_Final(Matriz_Multiplos_Indices[i], es_finan=False),
+            columns=[i]
         )
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 7: Consolidar y exportar Z-scores a ZODA.xlsm hoja "BD"
+    # PASO 8: Baskets y Z relativos
+    # ──────────────────────────────────────────────────────────────────────────
+    print("\n[6/9] Calculando Baskets y Z relativos (basket y BVL)...")
+
+    Matriz_Baskets_Finan = {
+        t: Creacion_DF_Basket(Basket_Financieras[t], Matriz_Multiplos, MarketCap, Fechas_Diarias)
+        for t in Empresas_Financieras if t in Basket_Financieras
+    }
+    Matriz_Baskets_Cons_Const = {
+        t: Creacion_DF_Basket(Basket_Cons_Const[t], Matriz_Multiplos, MarketCap, Fechas_Diarias)
+        for t in Empresas_Cons_Const if t in Basket_Cons_Const
+    }
+    Matriz_Baskets_Min_Utl = {
+        t: Creacion_DF_Basket(Basket_Min_Utl[t], Matriz_Multiplos, MarketCap, Fechas_Diarias)
+        for t in Empresas_Min_Utl if t in Basket_Min_Utl
+    }
+
+    # Z_Basket = Z-score de (mult_empresa / mult_basket)  ← fiel al notebook
+    Matriz_Z_Financieras_Basket = {}
+    for t in Empresas_Financieras:
+        if t in Matriz_Multiplos and t in Matriz_Baskets_Finan:
+            ratio = Matriz_Multiplos[t].div(Matriz_Baskets_Finan[t])
+            Matriz_Z_Financieras_Basket[f"Z_Basket_{t}"] = pd.DataFrame(
+                Creacion_Z_Final(ratio, es_finan=True), columns=[f"Z_Basket_{t}"]
+            )
+
+    Matriz_Z_Cons_Const_Basket = {}
+    for t in Empresas_Cons_Const:
+        if t in Matriz_Multiplos and t in Matriz_Baskets_Cons_Const:
+            ratio = Matriz_Multiplos[t].div(Matriz_Baskets_Cons_Const[t])
+            Matriz_Z_Cons_Const_Basket[f"Z_Basket_{t}"] = pd.DataFrame(
+                Creacion_Z_Final(ratio, es_finan=False), columns=[f"Z_Basket_{t}"]
+            )
+
+    Matriz_Z_Min_Utl_Basket = {}
+    for t in Empresas_Min_Utl:
+        if t in Matriz_Multiplos and t in Matriz_Baskets_Min_Utl:
+            ratio = Matriz_Multiplos[t].div(Matriz_Baskets_Min_Utl[t])
+            Matriz_Z_Min_Utl_Basket[f"Z_Basket_{t}"] = pd.DataFrame(
+                Creacion_Z_Final(ratio, es_finan=False), columns=[f"Z_Basket_{t}"]
+            )
+
+    # Z_BVL = Z-score de (mult_empresa / mult_SPBLPGPT)  ← fiel al notebook
+    def _z_bvl(t, mult_emp, es_fin):
+        ratio = mult_emp.div(Matriz_Multiplos_Indices["SPBLPGPT Index"])
+        return pd.DataFrame(
+            Creacion_Z_Final(ratio, es_finan=es_fin), columns=[f"Z_BVL_{t}"]
+        )
+
+    Matriz_Z_Financieras_BVL = {
+        f"Z_BVL_{t}": _z_bvl(t, Matriz_Multiplos[t], True)
+        for t in Empresas_Financieras if t in Matriz_Multiplos
+    }
+    Matriz_Z_Cons_Const_BVL = {
+        f"Z_BVL_{t}": _z_bvl(t, Matriz_Multiplos[t], False)
+        for t in Empresas_Cons_Const if t in Matriz_Multiplos
+    }
+    Matriz_Z_Min_Utl_BVL = {
+        f"Z_BVL_{t}": _z_bvl(t, Matriz_Multiplos[t], False)
+        for t in Empresas_Min_Utl if t in Matriz_Multiplos
+    }
+
+    # Z_MXLA = Z-score de (mult_indice / mult_MXLA)  ← fiel al notebook
+    Matriz_Z_Indices_MXLA = {}
+    for i in TODAS_INDICES:
+        if i == "MXLA Index":
+            break
+        ratio = Matriz_Multiplos_Indices[i].div(Matriz_Multiplos_Indices["MXLA Index"])
+        Matriz_Z_Indices_MXLA[f"Z_MXLA_{i}"] = pd.DataFrame(
+            Creacion_Z_Final(ratio, es_finan=False), columns=[f"Z_MXLA_{i}"]
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PASO 9: Consolidar Base_Final_Z (orden exacto del notebook original)
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[7/9] Consolidando Z-scores y exportando a Excel...")
 
-    bloques = [
-        pd.concat(z_fin.values(),        axis=1),
-        pd.concat(z_cc.values(),         axis=1),
-        pd.concat(z_mu.values(),         axis=1),
-        pd.concat(z_fin_basket.values(), axis=1),
-        pd.concat(z_cc_basket.values(),  axis=1),
-        pd.concat(z_mu_basket.values(),  axis=1),
-        pd.concat(z_fin_bvl.values(),    axis=1),
-        pd.concat(z_cc_bvl.values(),     axis=1),
-        pd.concat(z_mu_bvl.values(),     axis=1),
-        pd.concat(z_idx.values(),        axis=1),
-    ]
-    if z_idx_mxla:
-        bloques.append(pd.concat(z_idx_mxla.values(), axis=1))
+    # Concatenar DataFrames individuales igual que el notebook:
+    # [Z_emp | Z_basket_emp | Z_BVL_emp | Z_indices | Z_MXLA_indices]
+    DF_Z_Financieras        = pd.concat(Matriz_Z_Financieras.values(),        axis=1, sort=False)
+    DF_Z_Cons_Const         = pd.concat(Matriz_Z_Cons_Const.values(),         axis=1, sort=False)
+    DF_Z_Min_Utl            = pd.concat(Matriz_Z_Min_Utl.values(),            axis=1, sort=False)
+    DF_Z_Financieras_Basket = pd.concat(Matriz_Z_Financieras_Basket.values(), axis=1, sort=False)
+    DF_Z_Cons_Const_Basket  = pd.concat(Matriz_Z_Cons_Const_Basket.values(),  axis=1, sort=False)
+    DF_Z_Min_Utl_Basket     = pd.concat(Matriz_Z_Min_Utl_Basket.values(),     axis=1, sort=False)
+    DF_Z_Financieras_BVL    = pd.concat(Matriz_Z_Financieras_BVL.values(),    axis=1, sort=False)
+    DF_Z_Cons_Const_BVL     = pd.concat(Matriz_Z_Cons_Const_BVL.values(),     axis=1, sort=False)
+    DF_Z_Min_Utl_BVL        = pd.concat(Matriz_Z_Min_Utl_BVL.values(),        axis=1, sort=False)
+    DF_Z_Indices            = pd.concat(Matriz_Z_Indices.values(),             axis=1, sort=False)
+    DF_Z_Indices_MXLA       = pd.concat(Matriz_Z_Indices_MXLA.values(),       axis=1, sort=False)
 
-    base_final_z = pd.concat(bloques, axis=1)
+    Base_Final_Z = pd.concat([
+        DF_Z_Financieras,
+        DF_Z_Cons_Const,
+        DF_Z_Min_Utl,
+        DF_Z_Financieras_Basket,
+        DF_Z_Cons_Const_Basket,
+        DF_Z_Min_Utl_Basket,
+        DF_Z_Financieras_BVL,
+        DF_Z_Cons_Const_BVL,
+        DF_Z_Min_Utl_BVL,
+        DF_Z_Indices,
+        DF_Z_Indices_MXLA,
+    ], axis=1, sort=False)
 
-    # Escribir en ZODA.xlsm
-    escribir_dataframe_en_excel(RUTA_ZODA, "BD",    base_final_z)
-    escribir_dataframe_en_excel(RUTA_ZODA, "DQ_IN", base_dq_in, incluir_indice=False)
+    # Escribir BD y DQ_IN en ZODA.xlsm
+    escribir_df_en_excel(RUTA_ZODA, "BD",    Base_Final_Z)
+    escribir_df_en_excel(RUTA_ZODA, "DQ_IN", base_dq_in, incluir_indice=False)
 
     # Exportar histórico de múltiplos por GICS
-    exportar_multiplos_historicos(todos_mult, RUTA_ZODA, RUTA_MULTIPLOS_HIST)
+    exportar_multiplos_historicos(Matriz_Multiplos, RUTA_ZODA, RUTA_MULTIPLOS_HIST)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 8: Exportar múltiplos comparables a la red
+    # PASO 10: Exportar múltiplos comparables a la red
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[8/9] Exportando múltiplos comparables a la red...")
+    todas_empresas = list(Datos_BBG.keys())
+    todas_baskets  = {**Matriz_Baskets_Finan,
+                      **Matriz_Baskets_Cons_Const,
+                      **Matriz_Baskets_Min_Utl}
 
-    todos_baskets    = {**b_fin, **b_cc, **b_mu}
-    df_mult_trimestr = preparar_multiplos_trimestrales(
-        todos_mult, todos_baskets, todas_empresas, fechas_tri, fechas_diarias
+    exportar_multiplos_comparables(
+        Matriz_Multiplos, todas_baskets, todas_empresas,
+        Fechas_Tri, Fechas_Diarias, RUTA_MULT_COMP
     )
-    escribir_dataframe_en_excel(RUTA_MULT_COMPARABLES, "Multiplos", df_mult_trimestr)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PASO 9: Generar PDF de gráficos
+    # PASO 11: PDF de gráficos
     # ──────────────────────────────────────────────────────────────────────────
     print("\n[9/9] Generando PDF de gráficos...")
-
-    df_z_fin = pd.concat(z_fin.values(), axis=1)
-    df_z_cc  = pd.concat(z_cc.values(),  axis=1)
-    df_z_mu  = pd.concat(z_mu.values(),  axis=1)
-
-    fecha_inicio_graf = pd.Timestamp("2016-01-01")
-    nombre_pdf = os.path.join(RUTA_PDF, f"Evolucion Z y Multiplos {FECHA_HOY}.pdf")
-
-    try:
-        with PdfPages(nombre_pdf) as pdf:
-            for ticker in todos_mult:
-                if ticker in emp_financieras:
-                    df_z_emp = df_z_fin
-                elif ticker in emp_min_utl:
-                    df_z_emp = df_z_mu
-                elif ticker in emp_cons_const:
-                    df_z_emp = df_z_cc
-                else:
-                    continue
-                fig = graficar_empresa(df_z_emp, todos_mult, ticker, fecha_inicio_graf)
-                pdf.savefig(fig, facecolor=fig.get_facecolor())
-                plt.close(fig)
-        print(f"  ✓ PDF guardado: {nombre_pdf}")
-    except Exception as e:
-        print(f"  ✗ Error al generar PDF: {e}")
-        print(f"    ¿Existe la carpeta? → {RUTA_PDF}")
+    generar_pdf(
+        Matriz_Multiplos,
+        DF_Z_Financieras, DF_Z_Cons_Const, DF_Z_Min_Utl,
+        Empresas_Financieras, Empresas_Cons_Const, Empresas_Min_Utl,
+        fecha_hoy, RUTA_PDF
+    )
 
     # ──────────────────────────────────────────────────────────────────────────
     # FIN
     # ──────────────────────────────────────────────────────────────────────────
     fin = datetime.datetime.now()
     print("\n" + "=" * 70)
-    print(f"  ✓ Completado en {fin - INICIO}")
+    print(f"  ✓ Completado en {fin - inicio}")
     print(f"  Hora de término: {fin.strftime('%d/%m/%Y %H:%M:%S')}")
     print("=" * 70)
     print(r"  \(._.)/  ¡Corrió con éxito!")
-    print(r"     |")
-    print(r"    7 7")
+    print("     |")
+    print("    7 7")
 
 
 # ==============================================================================
 # PUNTO DE ENTRADA
 # ==============================================================================
 if __name__ == "__main__":
-    # Este bloque hace que main() solo se ejecute cuando corres el script
-    # directamente. Si alguien importa este archivo desde otro script,
-    # main() NO se ejecuta automáticamente.
     main()
