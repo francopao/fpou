@@ -1,0 +1,426 @@
+"""
+procesar_b2358.py
+=================
+Procesa el archivo mensual B-2358-{mm}{yyyy}.XLS/.xlsx de la SBS/AFP INTEGRA.
+
+Estructura real del archivo (verificada sobre B-2358-en2026.xlsx):
+  Fila 1-5  : Metadatos / títulos  → ignorados
+  Fila 6    : Header nivel 1  → col A="Empresa", col R="Total Créditos", …
+  Fila 7    : Header nivel 2  → col B="Departamento", C="Provincia", D="Distrito"
+  Fila 8..N-1 : Datos con jerarquía sparse (forward-fill en A, B, C, D)
+  Fila N    : "Total general"  → ignorada
+
+REGLA DE ORO para las filas de datos:
+  ─ NO existe una fila de "subtotal de empresa" separada en la mayoría de bancos.
+  ─ Las filas con A=B=C=D=None son oficinas reales cuyo distrito/geo quedó
+    en blanco en la fuente SBS; se incluyen heredando la última jerarquía visible.
+  ─ La ÚNICA fila que se descarta es la última ("Total general"), identificada
+    porque su col A contiene exactamente ese texto.
+  ─ Se descartan también filas de metadatos encabezando el archivo (filas 1-7).
+
+Salida:
+  CSV y XLSX: Empresa | Departamento | Provincia | Distrito | Total_Creditos_Suma
+  (suma de col R agrupada por las cuatro claves jerárquicas)
+
+Requisitos:
+    pip install pandas openpyxl xlrd
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+import logging
+from pathlib import Path
+from datetime import datetime
+
+import pandas as pd
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURACIÓN  ← única sección que el usuario debe editar
+# ─────────────────────────────────────────────────────────────────────────────
+
+CARPETA_AFP = Path(r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA")
+
+# Índices de columna (0-based):  A=0  B=1  C=2  D=3  E=4 … R=17
+COL_EMPRESA   = 0
+COL_DPTO      = 1
+COL_PROVINCIA = 2
+COL_DISTRITO  = 3
+COL_TOTAL     = 17  # "Total Créditos"
+
+# Primera fila de datos reales, 0-based (fila 8 en Excel → índice 7)
+DATA_START_IDX = 7
+
+# Fila donde buscar el header "Total Créditos" para auto-detección (0-based)
+HEADER_IDX = 5  # fila 6 en Excel
+
+# Texto que identifica la fila "Total general" que se descarta
+TOTAL_GENERAL_TEXT = "total general"
+
+# Mapeo: dos primeras letras del mes en español → número de mes
+MES_MAP: dict[str, int] = {
+    "en": 1,  "fe": 2,  "mr": 3,  "ma": 3,
+    "ab": 4,  "my": 5,  "jn": 6,  "ju": 6,
+    "jl": 7,  "ag": 8,  "se": 9,  "oc": 10,
+    "no": 11, "di": 12,
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)-8s │ %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+log = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. DETECCIÓN DEL ARCHIVO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def encontrar_archivo(carpeta: Path) -> Path:
+    """
+    Localiza el archivo B-2358-*.XLS o B-2358-*.xlsx en la carpeta.
+    Si hay varios, usa el modificado más recientemente.
+    """
+    patrones = ["B-2358-*.XLS", "B-2358-*.xls",
+                "B-2358-*.xlsx", "B-2358-*.XLSX"]
+    candidatos: list[Path] = []
+    for pat in patrones:
+        candidatos.extend(carpeta.glob(pat))
+
+    if not candidatos:
+        raise FileNotFoundError(
+            f"No se encontró ningún archivo 'B-2358-*' en:\n  {carpeta}"
+        )
+
+    candidatos.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    if len(candidatos) > 1:
+        log.warning(
+            "Múltiples archivos detectados; se usa el más reciente: %s",
+            candidatos[0].name,
+        )
+    return candidatos[0]
+
+
+def extraer_periodo(nombre: str) -> tuple[int | None, int | None]:
+    """
+    Extrae (mes, año) del nombre 'B-2358-{prefijo}{año}'.
+    Ejemplo: 'B-2358-en2026.xlsx' → (1, 2026)
+    """
+    m = re.search(r"B-2358-([a-zA-Z]{2})(\d{4})", nombre, re.IGNORECASE)
+    if not m:
+        log.warning("No se pudo extraer periodo del nombre: %s", nombre)
+        return None, None
+    prefijo = m.group(1).lower()
+    anio    = int(m.group(2))
+    mes     = MES_MAP.get(prefijo)
+    if mes is None:
+        log.warning("Prefijo de mes no reconocido: '%s'", prefijo)
+    return mes, anio
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. LECTURA ROBUSTA  (soporta .xls legado y .xlsx, y archivos parcialmente dañados)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def leer_archivo(ruta: Path) -> list[tuple]:
+    """
+    Lee el archivo completo y devuelve todas las filas como lista de tuplas.
+    Intenta openpyxl primero (más robusto para .xlsx); luego xlrd para .xls.
+    """
+    sufijo = ruta.suffix.lower()
+
+    if sufijo in (".xlsx", ".xlsm"):
+        return _leer_openpyxl(ruta)
+    elif sufijo == ".xls":
+        return _leer_xlrd(ruta)
+    else:
+        # Extensión desconocida: probar ambos motores
+        for fn in (_leer_openpyxl, _leer_xlrd):
+            try:
+                return fn(ruta)
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"No se pudo leer '{ruta}' con ningún motor disponible."
+        )
+
+
+def _leer_openpyxl(ruta: Path) -> list[tuple]:
+    from openpyxl import load_workbook
+    wb = load_workbook(str(ruta), read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    filas = [tuple(fila) for fila in ws.iter_rows(values_only=True)]
+    wb.close()
+    log.info("Motor openpyxl | %d filas | hoja: '%s'", len(filas), ws.title)
+    return filas
+
+
+def _leer_xlrd(ruta: Path) -> list[tuple]:
+    import xlrd
+    # Intentar con y sin formatting_info (el segundo modo tolera más corrupción)
+    for fmt_info in (True, False):
+        try:
+            wb   = xlrd.open_workbook(str(ruta), formatting_info=fmt_info)
+            hoja = wb.sheets()[0]
+            filas: list[tuple] = []
+            for ri in range(hoja.nrows):
+                fila = []
+                for ci in range(hoja.ncols):
+                    cell = hoja.cell(ri, ci)
+                    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                        fila.append(None)
+                    elif cell.ctype == xlrd.XL_CELL_ERROR:
+                        fila.append(None)
+                    elif cell.ctype == xlrd.XL_CELL_TEXT:
+                        v = cell.value.strip()
+                        fila.append(v if v else None)
+                    else:
+                        fila.append(cell.value)
+                filas.append(tuple(fila))
+            log.info(
+                "Motor xlrd (fmt=%s) | %d filas | hoja: '%s'",
+                fmt_info, len(filas), hoja.name,
+            )
+            return filas
+        except Exception as exc:
+            log.warning("xlrd (formatting_info=%s) falló: %s", fmt_info, exc)
+
+    raise RuntimeError(f"xlrd no pudo abrir: {ruta}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. AUTO-DETECCIÓN DE LA COLUMNA "TOTAL CRÉDITOS"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detectar_columna_total(filas: list[tuple]) -> int:
+    """
+    Busca en la fila HEADER_IDX la columna cuyo texto contenga 'TOTAL' y 'CR'.
+    Si no la encuentra, usa el default COL_TOTAL.
+    """
+    if HEADER_IDX >= len(filas):
+        return COL_TOTAL
+
+    for idx, val in enumerate(filas[HEADER_IDX]):
+        if val is None:
+            continue
+        texto = str(val).upper()
+        if "TOTAL" in texto and "CR" in texto:
+            log.info("Col 'Total Créditos' → índice %d ('%s')", idx, val)
+            return idx
+
+    log.warning(
+        "Header 'Total Créditos' no encontrado; usando índice por defecto: %d",
+        COL_TOTAL,
+    )
+    return COL_TOTAL
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. CONSTRUCCIÓN DEL DATAFRAME CON JERARQUÍA RESUELTA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _str_limpio(val) -> str | None:
+    """Celda → str sin espacios, o None si vacía."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
+def _es_total_general(fila: tuple) -> bool:
+    """Detecta la fila de cierre 'Total general' por col A."""
+    a = _str_limpio(fila[0])
+    return a is not None and a.lower() == TOTAL_GENERAL_TEXT
+
+
+def construir_dataframe(filas: list[tuple], col_total: int) -> pd.DataFrame:
+    """
+    Aplica forward-fill en las columnas jerárquicas (A, B, C, D) e incluye
+    TODAS las filas de datos (incluso aquellas con A=B=C=D=None, que son
+    oficinas válidas sin datos geo asignados en la fuente SBS).
+
+    Se descartan únicamente:
+      • Las filas de metadatos previas a DATA_START_IDX (filas 1-7 en Excel).
+      • La última fila "Total general".
+      • Filas donde col R (Total Créditos) es None o no numérico.
+    """
+    n_cols_min = max(COL_EMPRESA, COL_DPTO, COL_PROVINCIA,
+                     COL_DISTRITO, col_total) + 1
+
+    # Estado del forward-fill (se actualiza al encontrar cada valor no-nulo)
+    ultimo: dict[str, str | None] = {
+        "Empresa"      : None,
+        "Departamento" : None,
+        "Provincia"    : None,
+        "Distrito"     : None,
+    }
+
+    registros: list[dict] = []
+
+    for fila_raw in filas[DATA_START_IDX:]:
+        # Padding por si la fila tiene menos columnas de lo esperado
+        fila = list(fila_raw) + [None] * max(0, n_cols_min - len(fila_raw))
+
+        # ── Descartar fila "Total general" ──────────────────────────────
+        if _es_total_general(fila_raw):
+            log.info("Fila 'Total general' detectada y descartada.")
+            continue
+
+        # ── Actualizar forward-fill con cualquier valor no-nulo ─────────
+        # Esto aplica SIEMPRE, incluso si la fila no tiene valor en R,
+        # para mantener el estado correcto de la jerarquía.
+        if (v := _str_limpio(fila[COL_EMPRESA])):
+            ultimo["Empresa"] = v
+        if (v := _str_limpio(fila[COL_DPTO])):
+            ultimo["Departamento"] = v
+        if (v := _str_limpio(fila[COL_PROVINCIA])):
+            ultimo["Provincia"] = v
+        if (v := _str_limpio(fila[COL_DISTRITO])):
+            ultimo["Distrito"] = v
+
+        # ── Valor de Total Créditos ─────────────────────────────────────
+        raw_r = fila[col_total]
+        if raw_r is None:
+            continue  # fila sin dato de crédito → no contribuye a la suma
+        try:
+            total = float(raw_r)
+        except (ValueError, TypeError):
+            continue
+
+        registros.append({
+            "Empresa"      : ultimo["Empresa"],
+            "Departamento" : ultimo["Departamento"],
+            "Provincia"    : ultimo["Provincia"],
+            "Distrito"     : ultimo["Distrito"],
+            "Total_Creditos": total,
+        })
+
+    df = pd.DataFrame(registros)
+    log.info("Filas de datos incluidas: %d", len(df))
+
+    # Validación: avisar si alguna clave quedó sin resolver
+    for col in ("Empresa", "Departamento", "Provincia", "Distrito"):
+        n = df[col].isna().sum()
+        if n:
+            log.warning("'%s': %d filas sin clave resuelta", col, n)
+
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. AGRUPACIÓN Y SUMA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def agrupar(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Agrupa por (Empresa, Departamento, Provincia, Distrito) y suma
+    Total_Creditos. Preserva el orden de primera aparición.
+    """
+    claves = ["Empresa", "Departamento", "Provincia", "Distrito"]
+    resultado = (
+        df.groupby(claves, sort=False, dropna=False)["Total_Creditos"]
+        .sum()
+        .reset_index()
+        .rename(columns={"Total_Creditos": "Total_Creditos_Suma"})
+    )
+    log.info("Grupos únicos: %d", len(resultado))
+    return resultado
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. EXPORTACIÓN
+# ─────────────────────────────────────────────────────────────────────────────
+
+def exportar(df: pd.DataFrame, carpeta: Path,
+             mes: int | None, anio: int | None) -> None:
+    sufijo = f"{mes:02d}{anio}" if mes and anio else "resultado"
+    base   = carpeta / f"B-2358-resumen-{sufijo}"
+
+    # CSV con BOM → Excel en Windows lo abre con tildes correctas
+    ruta_csv = base.with_suffix(".csv")
+    df.to_csv(ruta_csv, index=False, encoding="utf-8-sig")
+    log.info("CSV  → %s", ruta_csv)
+
+    ruta_xlsx = base.with_suffix(".xlsx")
+    with pd.ExcelWriter(ruta_xlsx, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name="Resumen")
+    log.info("XLSX → %s", ruta_xlsx)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. PIPELINE PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    # 1. Detectar archivo
+    ruta = encontrar_archivo(CARPETA_AFP)
+    log.info("Archivo: %s", ruta.name)
+
+    mes, anio = extraer_periodo(ruta.name)
+    if mes and anio:
+        log.info("Periodo: %s %d", datetime(2000, mes, 1).strftime("%B"), anio)
+
+    # 2. Leer todas las filas de forma robusta
+    filas = leer_archivo(ruta)
+
+    # 3. Auto-detectar columna "Total Créditos"
+    col_total = detectar_columna_total(filas)
+
+    # 4. Construir DataFrame con forward-fill de jerarquía
+    df_raw = construir_dataframe(filas, col_total)
+
+    # 5. Agrupar y sumar
+    df_res = agrupar(df_raw)
+
+    # 6. Validación cruzada contra el "Total general" del propio archivo
+    total_calculado = df_res["Total_Creditos_Suma"].sum()
+    total_archivo   = _extraer_total_general(filas, col_total)
+    if total_archivo is not None:
+        diff = abs(total_calculado - total_archivo)
+        estado = "✓ OK" if diff < 1.0 else f"⚠ DIFERENCIA: {diff:,.4f}"
+        log.info(
+            "Validación: calculado=%,.2f | archivo=%,.2f | %s",
+            total_calculado, total_archivo, estado,
+        )
+    else:
+        log.info("Total calculado: %,.2f", total_calculado)
+
+    # 7. Vista previa en consola
+    print(f"\n{'─'*72}")
+    print(
+        f"  B-2358 │ {len(df_res):,} grupos │ "
+        f"Total Créditos: {total_calculado:,.2f} (miles de soles)"
+    )
+    print(f"{'─'*72}")
+    with pd.option_context(
+        "display.max_rows", 30,
+        "display.max_colwidth", 26,
+        "display.float_format", "{:,.2f}".format,
+    ):
+        print(df_res.to_string(index=False))
+    print(f"{'─'*72}\n")
+
+    # 8. Exportar
+    exportar(df_res, CARPETA_AFP, mes, anio)
+    log.info("✓ Proceso completado.")
+
+
+def _extraer_total_general(filas: list[tuple], col_total: int) -> float | None:
+    """Lee el valor de 'Total general' directamente del archivo como referencia."""
+    for fila in reversed(filas):
+        if _es_total_general(fila):
+            try:
+                return float(fila[col_total])
+            except (TypeError, ValueError, IndexError):
+                return None
+    return None
+
+
+if __name__ == "__main__":
+    main()
