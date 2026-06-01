@@ -1,0 +1,1243 @@
+
+
+
+
+import datetime
+import pandas as pd
+
+
+
+
+
+
+import xlwings as xw
+import time
+import random
+import string
+
+ruta = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut\Benchmarking\G&P_MLab.xlsm"
+
+
+app = xw.App(visible=True)  # 👈 ponlo True para ver qué pasa
+app.display_alerts = False
+app.screen_updating = False
+
+wb = app.books.open(ruta, update_links=False)
+
+ws_abs = wb.sheets["Abs"]
+ws_det = wb.sheets["Detallado"]
+
+# -----------------------------------------
+# Limpieza de headers
+# -----------------------------------------
+def limpiar_headers(headers):
+    nuevos = []
+    for h in headers:
+        if h is None or str(h).strip() == "":
+            rand = ''.join(random.choices(string.ascii_uppercase, k=5))
+            nuevos.append(f"col_{rand}")
+        else:
+            nuevos.append(str(h))
+    return nuevos
+
+# -----------------------------------------
+# Esperar a que Excel termine cálculo
+# -----------------------------------------
+def esperar_calculo(app, timeout=120):
+    start = time.time()
+    while app.api.CalculationState != 0:
+        if time.time() - start > timeout:
+            print("⚠️ Timeout en cálculo")
+            break
+        time.sleep(1)
+
+# -----------------------------------------
+# Lectura segura (HASTA BC)
+# -----------------------------------------
+def leer_data():
+    last_col = 55  # BC = columna 55
+
+    # encontrar última fila con datos reales
+    last_row = ws_det.range("A" + str(ws_det.cells.last_cell.row)).end("up").row
+
+    # headers fila 10
+    headers = ws_det.range((10, 1), (10, last_col)).value
+    headers = limpiar_headers(headers)
+
+    # data desde fila 11
+    data = ws_det.range((11, 1), (last_row, last_col)).value
+
+    df = pd.DataFrame(data, columns=headers)
+    return df
+
+# -----------------------------------------
+# MAIN
+# -----------------------------------------
+G_P = {}
+
+for filtro in ["T", "MTD", "YTD"]:
+    print(f"\nProcesando {filtro}...")
+
+#    ws_abs.range("E3").value = filtro
+
+    # Forzar cálculo
+#    app.api.Calculate()
+
+    # Esperar a que termine
+#    esperar_calculo(app)
+
+    # buffer adicional (muy importante en Excels pesados)
+#    time.sleep(3)
+
+
+    print(f"\nProcesando {filtro}...")
+
+    # 👇 1. Guardas valor previo (antes de cambiar filtro)
+    prev_val = ws_det.range("A11").value
+
+    # 👇 2. Cambias filtro
+    ws_abs.range("E3").value = filtro
+
+    # 👇 3. Forzar cálculo
+    app.api.Calculate()
+
+    # 👇 4. Esperar a que Excel termine cálculo interno
+    esperar_calculo(app)
+
+    # 👇 5. Esperar a que los datos CAMBIEN realmente
+    start = time.time()
+    timeout = 15  # segundos
+
+    while ws_det.range("A11").value == prev_val:
+        if time.time() - start > timeout:
+            print("⚠️ Timeout esperando actualización de datos")
+            break
+        time.sleep(1)
+
+    # 👇 6. Buffer adicional (opcional pero recomendado)
+    time.sleep(2)
+
+    # 👇 7. Leer data
+    df = leer_data()
+
+    print(f"{filtro} cargado: {df.shape}")
+    G_P[filtro] = df
+
+    df = leer_data()
+
+    print(f"{filtro} cargado: {df.shape}")
+
+    G_P[filtro] = df
+
+wb.close()
+app.quit()
+
+
+# In[4]:
+
+
+with pd.ExcelWriter(r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\G_P_output.xlsx", engine="openpyxl") as writer:
+    for k, df in G_P.items():
+        df.to_excel(writer, sheet_name=k, index=False)
+
+
+# ### DATABASE - FIXED INCOME & FX
+
+# In[5]:
+
+
+import os
+import re
+import pandas as pd
+from datetime import datetime
+
+# =========================
+# CONFIGURACIÓN DE CARPETAS
+# =========================
+carpetas = {
+    "RFL": r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Data Descargas\2. Data Descargas\RFL",
+    "VECTOR": r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Data Descargas\2. Data Descargas\VECTOR",
+    "TC": r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Data Descargas\2. Data Descargas\TC",
+    "SBS": r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Data Descargas\2. Data Descargas\SBS",
+    "RFI": r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Data Descargas\2. Data Descargas\RFI"
+}
+
+# =========================
+# FUNCIÓN: OBTENER ARCHIVO MÁS RECIENTE SEGÚN NOMBRE
+# =========================
+def obtener_archivo_reciente(ruta, prefijo):
+    patron = re.compile(fr"{prefijo} (\d{{2}})\.(\d{{2}})\.(\d{{2}})", re.IGNORECASE)
+    archivos_validos = []
+
+    for archivo in os.listdir(ruta):
+        if archivo.lower().endswith(".xls"):
+            match = patron.search(archivo)
+            if match:
+                dia, mes, anio = match.groups()
+                anio_completo = int("20" + anio)
+
+                try:
+                    fecha = datetime(anio_completo, int(mes), int(dia))
+                    archivos_validos.append((archivo, fecha))
+                except ValueError:
+                    pass
+
+    if not archivos_validos:
+        return None, None
+
+    return max(archivos_validos, key=lambda x: x[1])
+
+# =========================
+# FUNCIÓN: LECTURA ROBUSTA
+# =========================
+def leer_archivo(ruta_completa):
+    try:
+        # Intento 1: Excel real (.xls)
+        return pd.read_excel(ruta_completa, engine="xlrd")
+    except:
+        try:
+            # Intento 2: HTML disfrazado
+            tablas = pd.read_html(ruta_completa)
+            return tablas[0]
+        except:
+            try:
+                # Intento 3: texto tipo CSV/TSV
+                return pd.read_csv(ruta_completa, sep="\t", encoding="latin1")
+            except Exception as e:
+                raise Exception(f"No se pudo leer en ningún formato: {e}")
+
+# =========================
+# PROCESAMIENTO MASIVO
+# =========================
+descargas1 = {}
+fechas_detectadas = {}
+
+for nombre, ruta in carpetas.items():
+    archivo, fecha = obtener_archivo_reciente(ruta, nombre)
+
+    if archivo:
+        ruta_completa = os.path.join(ruta, archivo)
+
+        try:
+            df = leer_archivo(ruta_completa)
+            descargas1[nombre] = df
+            fechas_detectadas[nombre] = fecha
+
+            print(f"[{nombre}] ✅ Archivo: {archivo} | Fecha: {fecha.strftime('%d/%m/%Y')}")
+
+        except Exception as e:
+            print(f"[{nombre}] ❌ Error al leer archivo: {archivo} -> {e}")
+
+    else:
+        print(f"[{nombre}] ⚠️ No se encontró archivo válido.")
+
+# =========================
+# RESUMEN FINAL
+# =========================
+print("\nResumen de fechas cargadas:")
+for k, v in fechas_detectadas.items():
+    print(f"{k}: {v.strftime('%d/%m/%Y')}")
+
+
+# In[6]:
+
+
+print("\nNombres de los DataFrames cargados en 'descargas1':")
+for clave in descargas1.keys():
+    print(clave)
+
+
+# In[7]:
+
+
+print(descargas1["RFL"])
+
+
+# ### AUM
+
+# In[8]:
+
+
+import pandas as pd
+from datetime import datetime
+
+# =========================
+# RUTA DEL ARCHIVO
+# =========================
+ruta_qest = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut\Benchmarking\QEST_BD.xlsm"
+
+# =========================
+# LECTURA DEL ARCHIVO
+# =========================
+# Leemos sin headers, solo columnas A:E desde fila 15
+df_raw = pd.read_excel(
+    ruta_qest,
+    sheet_name="DQ_IN",
+    usecols="A:E",
+    skiprows=14,   # empieza en fila 15
+    header=None,
+    engine="openpyxl"
+)
+
+# =========================
+# LIMPIEZA: eliminar filas completamente vacías
+# =========================
+df_raw = df_raw.dropna(how="all")
+
+# =========================
+# ASIGNAR HEADERS MANUALES
+# =========================
+df_raw.columns = ["Fondo", "Dato", "Fecha", "SBS", "VALFON"]
+
+# =========================
+# LIMPIEZA DE FECHAS
+# =========================
+df_raw["Fecha"] = pd.to_datetime(df_raw["Fecha"], errors="coerce")
+
+# Eliminar filas donde Fecha sea nula
+df_raw = df_raw.dropna(subset=["Fecha"])
+
+# =========================
+# DATAFRAME FINAL
+# =========================
+QEST_BD = df_raw.copy()
+
+# =========================
+# OBTENER FECHA MÁS RECIENTE
+# =========================
+fecha_max = QEST_BD["Fecha"].max()
+
+print(f"\nFecha más reciente encontrada: {fecha_max.strftime('%d/%m/%Y')}")
+
+# =========================
+# FILTRO SEGÚN CONDICIONES
+# =========================
+fondos_buscar = ["IN-FONDO3", "IN-FONDO2", "IN-FONDO1"]
+
+resultado = QEST_BD[
+    (QEST_BD["Fecha"] == fecha_max) &
+    (QEST_BD["Dato"] == "PxQ") &
+    (QEST_BD["Fondo"].isin(fondos_buscar))
+]
+
+# =========================
+# PRINT RESULTADO
+# =========================
+print("\nValores VALFON para PxQ en la fecha más reciente:\n")
+
+if resultado.empty:
+    print("No se encontraron coincidencias.")
+else:
+    for _, row in resultado.iterrows():
+        print(f"{row['Fondo']}: {row['VALFON']}")
+
+
+# In[9]:
+
+
+# Mapeo de nombres
+mapa_fondos = {
+    "IN-FONDO3": "IN-F3",
+    "IN-FONDO2": "IN-F2",
+    "IN-FONDO1": "IN-F1"
+}
+
+# Crear lista "Integra"
+Integra = [
+    f"{mapa_fondos[row['Fondo']]}: {row['VALFON']}"
+    for _, row in resultado.iterrows()
+]
+
+# Print
+print("\nAUM Integra:")
+for item in Integra:
+    print(item)
+
+
+# In[10]:
+
+
+ruta_mlab = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut\Benchmarking\MLab_PA.xlsx"
+
+# Leer columnas A:D
+df_mlab = pd.read_excel(
+    ruta_mlab,
+    sheet_name="patrim",
+    usecols="A:D",
+    engine="openpyxl"
+)
+
+# Obtener nombre del header de la primera columna
+header_col_A = df_mlab.columns[0]
+
+print(f"\nFecha más reciente encontrada: '{header_col_A}'")
+
+# Renombrar columnas
+df_mlab.columns = ["AFP", "F1", "F2", "F3"]
+
+
+# In[11]:
+
+
+print(df_mlab)
+
+
+# In[12]:
+
+
+# Mapeo de AFP a nombre de lista
+mapa_afp = {
+    "HA": "Habitat",
+    "PF": "Profuturo",
+    "SI": "Sistema",
+    "RI": "Prima"
+}
+
+# Crear diccionario de listas
+listas_afp = {}
+
+# Iterar filas
+for _, row in df_mlab.iterrows():
+    nombre_lista = mapa_afp[row["AFP"]]
+
+    listas_afp[nombre_lista] = [
+        f"{row['AFP']}-{col}: {row[col]}"
+        for col in df_mlab.columns[1:]
+    ]
+
+# Asignar listas individuales (si las quieres como variables separadas)
+Habitat = listas_afp.get("Habitat", [])
+Profuturo = listas_afp.get("Profuturo", [])
+Sistema = listas_afp.get("Sistema", [])
+Prima = listas_afp.get("Prima", [])
+
+# Print
+for nombre, lista in listas_afp.items():
+    print(f"\n{nombre}:")
+    for item in lista:
+        print(item)
+
+
+# In[13]:
+
+
+import pandas as pd
+
+# Ruta del archivo
+file_path = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Posicionamiento Relativo RF - ISIN universe.xlsx"
+
+# Leer las hojas
+df_isin = pd.read_excel(file_path, sheet_name="ISIN")
+df_sbs = pd.read_excel(file_path, sheet_name="SBS")
+
+# Encontrar columnas comunes (headers iguales)
+common_columns = list(set(df_isin.columns).intersection(df_sbs.columns))
+
+# Crear el diccionario
+RF_universe = {}
+
+# Iterar sobre cada columna común
+for col in common_columns:
+    # Crear DataFrame con correspondencia posicional
+    temp_df = pd.DataFrame({
+        "ISIN": df_isin[col],
+        "SBS": df_sbs[col]
+    })
+
+    # Guardar en el diccionario con el nombre del header
+    RF_universe[col] = temp_df
+
+# Ejemplo: acceder al DataFrame donde se registró el ultimo instrumento / o verificar si el instrumento se retiro
+# print(RF_universe["PEN Duration - Nominal - Corp NT"].head())
+print(list(RF_universe.keys()))
+
+
+# In[14]:
+
+
+print(list(RF_universe.keys()))
+
+
+# In[15]:
+
+
+print(RF_universe["PEN Duration - Nominal - Corp NT"].head())
+
+
+# In[16]:
+
+
+# DataFrame de referencia
+df_T = G_P["T"].copy()
+
+# Asegurar tipo string en T
+df_T["SBS"] = df_T["SBS"].astype(str).str.strip()
+
+# Columnas a agregar
+cols_to_add = ["ID_Quest", "Nombre", "Moneda", "Asset Class", "Mercado", "Cat"]
+
+for key in RF_universe:
+    df = RF_universe[key].copy()
+
+    # Asegurar tipo string en cada dataframe
+    df["SBS"] = df["SBS"].astype(str).str.strip()
+
+    # Merge
+    df_merged = df.merge(
+        df_T[["SBS"] + cols_to_add],
+        on="SBS",
+        how="left"
+    )
+
+    RF_universe[key] = df_merged
+
+
+# In[17]:
+
+
+for key in RF_universe:
+    RF_universe[key] = RF_universe[key].dropna()
+
+
+# In[18]:
+
+
+for df in RF_universe.values():
+    df.rename(columns={
+        "ID_Quest": "Nemonico",
+        "ID_Quest_x": "Nemonico"
+    }, inplace=True)
+
+
+# In[19]:
+
+
+k = random.choice(list(RF_universe.keys()))
+print(k)
+print(RF_universe[k])
+
+
+# In[20]:
+
+
+new_names = ["IN-F1", "HA-F1", "RI-F1", "PF-F1", "SIST-F1",
+             "IN-F2", "HA-F2", "RI-F2", "PF-F2", "SIST-F2",
+             "IN-F3", "HA-F3", "RI-F3", "PF-F3", "SIST-F3"]
+
+df = G_P["T"]
+cols = list(df.columns)
+pbs_idx = 0
+
+for i in range(len(cols)):
+    if cols[i] == "PBS":
+        if pbs_idx < len(new_names):
+            cols[i] = new_names[pbs_idx]
+            pbs_idx += 1
+
+df.columns = cols
+
+
+# In[21]:
+
+
+# DataFrame de referencia
+df_T = G_P["T"].copy()
+
+# Asegurar tipo string en T
+df_T["SBS"] = df_T["SBS"].astype(str).str.strip()
+
+# Columnas a agregar
+cols_to_add = ["IN-F1", "HA-F1", "RI-F1", "PF-F1", "SIST-F1",
+             "IN-F2", "HA-F2", "RI-F2", "PF-F2", "SIST-F2",
+             "IN-F3", "HA-F3", "RI-F3", "PF-F3", "SIST-F3"]
+
+for key in RF_universe:
+    df = RF_universe[key].copy()
+
+    # Asegurar tipo string en cada dataframe
+    df["SBS"] = df["SBS"].astype(str).str.strip()
+
+    # Merge
+    df_merged = df.merge(
+        df_T[["SBS"] + cols_to_add],
+        on="SBS",
+        how="left"
+    )
+
+    RF_universe[key] = df_merged
+
+
+# In[22]:
+
+
+RFL = descargas1["RFL"]
+RFL.columns = RFL.columns.str.strip()
+
+cols_map = {
+    "DURACI&Oacute;N": "Duration",
+    "TIR %": "TIR",
+    "TASA CUP&Oacute;N": "CPN",
+    "PRECIO LIMPIO (%)": "PL T"
+}
+
+for key in RF_universe:
+    df = RF_universe[key]
+
+    df = df.merge(
+        RFL[["ISIN"] + list(cols_map.keys())],
+        on="ISIN",
+        how="left"
+    )
+
+    df.rename(columns=cols_map, inplace=True)
+
+    # ✅ ✅ FIX CORRECTO (mantiene la última columna)
+    df = df.loc[:, ~df.columns.duplicated(keep="last")]
+
+    # ✅ cálculo seguro
+    df["C. Yield"] = (df["CPN"] / df["PL T"]) * 100
+
+    RF_universe[key] = df
+
+
+# In[23]:
+
+
+print(G_P["T"].columns)
+
+
+# In[24]:
+
+
+print(type(df["CPN"]))
+print(type(df["PL T"]))
+
+
+# In[25]:
+
+
+print(descargas1["RFL"].columns)
+
+
+# In[26]:
+
+
+G_P = {k: df.rename(columns={"ID_Quest": "Nemonico"}) for k, df in G_P.items()}
+G_P = {k: df.fillna(0) for k, df in G_P.items()}
+# elegir key aleatoria
+key_aleatoria = random.choice(list(G_P.keys()))
+df_aleatorio = G_P[key_aleatoria]
+# tomar 10 filas aleatorias
+muestra = df_aleatorio.sample(n=10)
+print(f"Escenario G&P elegido: {key_aleatoria}")
+print(muestra)
+
+
+# In[27]:
+
+
+# -----------------------------------------
+# 1. Crear mapa SBS → Categoria
+# -----------------------------------------
+sbs_to_categoria = {}
+
+for categoria, df_rf in RF_universe.items():
+    if "SBS" not in df_rf.columns:
+        continue
+
+    for val in df_rf["SBS"].dropna().unique():
+        if val not in sbs_to_categoria:
+            sbs_to_categoria[val] = categoria
+
+# -----------------------------------------
+# 2. Asignar Categoria + detectar missing
+# -----------------------------------------
+for k, df in G_P.items():
+    if "SBS" not in df.columns:
+        continue
+
+    # asignar categoría
+    df["Categoria"] = df["SBS"].map(sbs_to_categoria)
+
+    # detectar no mapeados
+    missing_mask = df["Categoria"].isna()
+
+    if missing_mask.any():
+        missing_vals = df.loc[missing_mask, "SBS"].unique()
+        print(f"\n⚠️ Valores SIN clasificación en {k}:")
+        print(missing_vals)
+
+    # reemplazar NaN por valor default
+    df["Categoria"] = df["Categoria"].fillna("Sin clasificacion")
+
+
+# In[28]:
+
+
+# DataFrame de referencia
+df_T = G_P["T"].copy()
+
+# Asegurar tipo string en T
+df_T["SBS"] = df_T["SBS"].astype(str).str.strip()
+
+# Columnas a agregar
+cols_to_add = ["IN-F1", "HA-F1", "RI-F1", "PF-F1", "SIST-F1",
+               "IN-F2", "HA-F2", "RI-F2", "PF-F2", "SIST-F2",
+               "IN-F3", "HA-F3", "RI-F3", "PF-F3", "SIST-F3"]
+
+# Iterar sobre G_P
+for key in G_P:
+
+    # Opcional: saltar la propia "T" para no hacer merge consigo mismo
+    if key == "T":
+        continue
+
+    df = G_P[key].copy()
+
+    # Asegurar tipo string
+    df["SBS"] = df["SBS"].astype(str).str.strip()
+
+    # Merge
+    df_merged = df.merge(
+        df_T[["SBS"] + cols_to_add],
+        on="SBS",
+        how="left"
+    )
+
+    # Guardar
+    G_P[key] = df_merged
+
+
+# In[29]:
+
+
+# columnas a sumar
+cols_sum = ["IN-F1", "HA-F1", "RI-F1", "PF-F1", "SIST-F1",
+            "IN-F2", "HA-F2", "RI-F2", "PF-F2", "SIST-F2",
+            "IN-F3", "HA-F3", "RI-F3", "PF-F3", "SIST-F3"]
+
+Performance = {}
+
+for k, df in G_P.items():
+    # asegurar que columnas existan (robustez)
+    cols_present = [c for c in cols_sum if c in df.columns]
+
+    # groupby por Categoria + suma
+    df_perf = df.groupby("Categoria")[cols_present].sum().reset_index()
+
+    Performance[k] = df_perf
+
+
+# In[30]:
+
+
+# elegir key aleatoria
+key_aleatoria = random.choice(list(Performance.keys()))
+df_aleatorio = Performance[key_aleatoria]
+print(f"DataFrame elegido: {key_aleatoria}")
+print(df_aleatorio.head(18))
+
+
+# In[31]:
+
+
+# claves que quieres agrupar
+keys = ["PEN Duration - Nominal", "PEN Duration - VAC"]
+
+for k, df in Performance.items():
+    nuevas_filas = []
+
+    # columnas numéricas (todas excepto Categoria)
+    cols_num = [c for c in df.columns if c != "Categoria"]
+
+    for key in keys:
+        # filtrar filas que empiezan con la clave
+        mask = df["Categoria"].str.startswith(key, na=False)
+        subset = df.loc[mask]
+
+        if subset.empty:
+            continue
+
+        # -------------------------
+        # 1. crear fila agregada
+        # -------------------------
+        nueva = subset[cols_num].sum()
+        nueva["Categoria"] = key
+
+        nuevas_filas.append(nueva)
+
+        # -------------------------
+        # 2. renombrar filas originales (quitar prefijo)
+        # -------------------------
+        df.loc[mask, "Categoria"] = df.loc[mask, "Categoria"].str.replace(
+            key + " - ", "", regex=False
+        )
+
+    # -------------------------
+    # 3. añadir nuevas filas
+    # -------------------------
+    if nuevas_filas:
+        df_nuevas = pd.DataFrame(nuevas_filas)
+        df = pd.concat([df, df_nuevas], ignore_index=True)
+
+    # guardar de vuelta
+    Performance[k] = df
+
+
+# In[32]:
+
+
+# claves que quieres agrupar
+keys = ["PEN Duration"]
+
+for k, df in Performance.items():
+    nuevas_filas = []
+
+    # columnas numéricas (todas excepto Categoria)
+    cols_num = [c for c in df.columns if c != "Categoria"]
+
+    for key in keys:
+        # filtrar filas que empiezan con la clave
+        mask = df["Categoria"].str.startswith(key, na=False)
+        subset = df.loc[mask]
+
+        if subset.empty:
+            continue
+
+        # -------------------------
+        # 1. crear fila agregada
+        # -------------------------
+        nueva = subset[cols_num].sum()
+        nueva["Categoria"] = key
+
+        nuevas_filas.append(nueva)
+
+        # -------------------------
+        # 2. renombrar filas originales (quitar prefijo)
+        # -------------------------
+        df.loc[mask, "Categoria"] = df.loc[mask, "Categoria"].str.replace(
+            key + " - ", "", regex=False
+        )
+
+    # -------------------------
+    # 3. añadir nuevas filas
+    # -------------------------
+    if nuevas_filas:
+        df_nuevas = pd.DataFrame(nuevas_filas)
+        df = pd.concat([df, df_nuevas], ignore_index=True)
+
+    # guardar de vuelta
+    Performance[k] = df
+
+
+# In[33]:
+
+
+# mapping de nombres antiguos → nuevos
+map_categoria = {
+    "USD Duration - Renta Fija Local - Corporativo (parte 1 - RFL)": "Corporativo Local",
+    "USD Duration - Renta Fija Local - Corporativo (parte 2 - Eurobonos)": "Corporativo Eurobonos",
+    "USD Duration - RF International EM  - HY": "Corporativo HY",
+    "USD Duration - RF International EM  - IG": "Corporativo IG",
+    "USD Government - PE": "Gobierno",
+    "Corps": "Corp NT VAC",
+    "Corp REGS": "Corp REGS (Local)",
+    "Corps Local Currency IG": "Corporativo IG Local",
+    "Corps Local Currency HY": "Corporativo HY Local"
+}
+
+# aplicar a todos los dataframes
+for df in Performance.values():
+    df["Categoria"] = df["Categoria"].replace(map_categoria)
+
+
+# In[34]:
+
+
+# categorías a sumar
+cats_globales = [
+    "USD Government - MX",
+    "USD Government - CO",
+    "USD Government - BR",
+    "USD Government - CL"
+]
+
+for k, df in Performance.items():
+    # columnas numéricas (todas menos Categoria)
+    cols_num = [c for c in df.columns if c != "Categoria"]
+
+    # filtrar las filas que quieres sumar
+    subset = df[df["Categoria"].isin(cats_globales)]
+
+    if subset.empty:
+        continue
+
+    # -------------------------
+    # crear nueva fila
+    # -------------------------
+    nueva = subset[cols_num].sum()
+    nueva["Categoria"] = "Globales"
+
+    # convertir a DataFrame
+    nueva_df = pd.DataFrame([nueva])
+
+    # añadir al dataframe
+    df = pd.concat([df, nueva_df], ignore_index=True)
+
+    # guardar de vuelta
+    Performance[k] = df
+
+
+# In[35]:
+
+
+# definiciones de agregaciones
+agregaciones = [
+    ("RF Internacional - EM", ["Globales", "Corporativo IG", "Corporativo HY"]),
+    ("RF Local", ["Gobierno", "Corporativo Local", "Corporativo Eurobonos"]),
+    ("Hard Currency", ["RF Local", "RF Internacional - EM"]),
+    ("Local Rates Duration", ["Corporativo IG", "Corporativo HY"])
+]
+
+for k, df in Performance.items():
+    cols_num = [c for c in df.columns if c != "Categoria"]
+
+    # ⚠️ evitar duplicados si corres esto más de una vez
+    nuevas_categorias = [name for name, _ in agregaciones]
+    df = df[~df["Categoria"].isin(nuevas_categorias)]
+
+    for nombre_nuevo, categorias_base in agregaciones:
+
+        subset = df[df["Categoria"].isin(categorias_base)]
+
+        if subset.empty:
+            print(f"{k} → ⚠️ No se pudo crear '{nombre_nuevo}' (faltan categorías base)")
+            continue
+
+        # crear nueva fila
+        nueva = subset[cols_num].sum()
+        nueva["Categoria"] = nombre_nuevo
+
+        # agregar al dataframe
+        df = pd.concat([df, pd.DataFrame([nueva])], ignore_index=True)
+
+    # guardar cambios
+    Performance[k] = df
+
+
+# In[36]:
+
+
+# -----------------------------------------
+# 1. Crear fila "GOVT USD + CORPORATIVOS"
+# -----------------------------------------
+categorias_base = ["Hard Currency", "PEN Duration", "Local Rates Duration"]
+subset = df[df["Categoria"].isin(categorias_base)]
+
+if not subset.empty:
+    nueva = subset[cols_num].sum()
+    nueva["Categoria"] = "GOVT USD + CORPORATIVOS"
+
+    # eliminar si ya existía
+    df = df[df["Categoria"] != "GOVT USD + CORPORATIVOS"]
+
+    # insertar al inicio
+    df = pd.concat([pd.DataFrame([nueva]), df], ignore_index=True)
+else:
+    print(f"{k} → ⚠️ No se pudo crear 'GOVT USD + CORPORATIVOS'")
+
+
+# #### CONSTRUCCION DE LA TABLA PERFORMANCE
+
+# In[37]:
+
+
+categorias_requeridas = [
+    "GOVT USD + CORPORATIVOS",
+    "PEN Duration",
+    "Nominal",
+    "Corp NT",
+    "Corp REGS (Local)",
+    "VAC",
+    "Corp NT VAC",
+    "Local Rates Duration",
+    "Corporativo IG Local",
+    "Corporativo HY Local",
+    "Hard Currency",
+    "RF Local",
+    "Gobierno",
+    "Corporativo Local",
+    "Corporativo Eurobonos",
+    "RF Internacional - EM",
+    "Globales",
+    "Corporativo IG",
+    "Corporativo HY"
+]
+
+for k, df in Performance.items():
+
+    cols_num = [c for c in df.columns if c != "Categoria"]
+    existentes = set(df["Categoria"])
+
+    faltantes = [cat for cat in categorias_requeridas if cat not in existentes]
+
+    # -----------------------------------------
+    # 1. PRINT de faltantes
+    # -----------------------------------------
+    if faltantes:
+        print(f"\n{k} → ⚠️ Categorías añadidas (no existían):")
+        print(faltantes)
+
+    # -----------------------------------------
+    # 2. Crear filas faltantes con 0
+    # -----------------------------------------
+    nuevas_filas = []
+    for cat in faltantes:
+        nueva = {col: 0 for col in cols_num}
+        nueva["Categoria"] = cat
+        nuevas_filas.append(nueva)
+
+    if nuevas_filas:
+        df = pd.concat([df, pd.DataFrame(nuevas_filas)], ignore_index=True)
+
+    # guardar
+    Performance[k] = df
+
+
+# In[38]:
+
+
+orden_final = [
+    "GOVT USD + CORPORATIVOS",
+    "PEN Duration",
+    "Nominal",
+    "Corp NT",
+    "Corp REGS (Local)",
+    "VAC",
+    "Corp NT",
+    "Local Rates Duration",
+    "Corporativo IG Local",
+    "Corporativo HY Local",
+    "Hard Currency",
+    "RF Local",
+    "Gobierno",
+    "Corporativo Local",
+    "Corporativo Eurobonos",
+    "RF Internacional - EM",
+    "Globales",
+    "Corporativo IG",
+    "Corporativo HY"
+]
+
+for k, df in Performance.items():
+    cols_num = [c for c in df.columns if c != "Categoria"]
+
+    # -----------------------------------------
+    # 2. Validar categorías faltantes
+    # -----------------------------------------
+    existentes = set(df["Categoria"])
+    faltantes = [cat for cat in orden_final if cat not in existentes]
+
+    if faltantes:
+        print(f"\n{k} → ⚠️ Categorías NO encontradas:")
+        print(faltantes)
+
+    # -----------------------------------------
+    # 3. Reordenar filas según orden_final
+    # -----------------------------------------
+    df["orden"] = df["Categoria"].apply(
+        lambda x: orden_final.index(x) if x in orden_final else len(orden_final)
+    )
+
+    df = df.sort_values("orden").drop(columns="orden").reset_index(drop=True)
+
+    # guardar
+    Performance[k] = df
+
+
+# In[39]:
+
+
+cats_eliminar = [
+    "USD Government - CO",
+    "USD Government - BR",
+    "USD Government - MX",
+    "USD Government - CL", "Sin clasificacion"
+]
+
+for k, df in Performance.items():
+    df = df[~df["Categoria"].isin(cats_eliminar)].reset_index(drop=True)
+    Performance[k] = df
+
+
+# In[40]:
+
+
+# elegir dataframe aleatorio
+df_rand = Performance[random.choice(list(Performance))]
+print(df_rand["Categoria"].unique())
+
+
+# In[41]:
+
+
+import pandas as pd
+import re
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+ruta_out = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\Performance RF\Performance_output.xlsx"
+ruta_fecha = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados\ZODA\shortcut\Benchmarking\
+    .xlsm"
+
+# ------------------ EXTRAER FECHA ------------------
+fecha = re.search(r"(\d{2}\.\d{2})", ruta_fecha).group(1)
+
+categorias_orden = [
+    "GOVT USD + CORPORATIVOS",
+    "PEN Duration",
+    "Nominal",
+    "Corp NT",
+    "Corp REGS (Local)",
+    "VAC",
+    "Corp NT VAC",
+    "Local Rates Duration",
+    "Corporativo IG Local",
+    "Corporativo HY Local",
+    "Hard Currency",
+    "RF Local",
+    "Gobierno",
+    "Corporativo Local",
+    "Corporativo Eurobonos",
+    "RF Internacional - EM",
+    "Globales",
+    "Corporativo IG",
+    "Corporativo HY"
+]
+
+cols_validas = [
+    "IN-F1","IN-F2","IN-F3",
+    "HA-F1","PF-F1","RI-F1","SIST-F1",
+    "HA-F2","PF-F2","RI-F2","SIST-F2",
+    "HA-F3","PF-F3","RI-F3","SIST-F3"
+]
+
+# ------------------ ESTILOS ------------------
+azul_header = PatternFill("solid", fgColor="002060")
+azul_claro = PatternFill("solid", fgColor="BDD7EE")
+gris_claro = PatternFill("solid", fgColor="E7E6E6")
+gris_total = PatternFill("solid", fgColor="D0CECE")
+
+rojo_pf = PatternFill("solid", fgColor="FF0000")
+beige_ri = PatternFill("solid", fgColor="F4B183")
+
+font_blanco = Font(color="FFFFFF", bold=True)
+font_bold = Font(bold=True)
+
+thin = Side(style="thin")
+thick = Side(style="medium")
+
+border_full = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+with pd.ExcelWriter(ruta_out, engine="openpyxl") as writer:
+
+    for k, df in Performance.items():
+
+        df = df.copy()
+
+        # ------------------ TEMPLATE BASE ------------------
+        template = pd.DataFrame(0.0, index=categorias_orden, columns=cols_validas)
+
+        df = df[df["Categoria"].isin(categorias_orden)]
+
+        for _, row in df.iterrows():
+            for col in cols_validas:
+                if col in df.columns:
+                    template.loc[row["Categoria"], col] = float(row[col])
+
+        # ✅ CLAVE: export limpio (SIN duplicación)
+        sheet_name = f"{k} {fecha}"
+
+        template.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            startrow=1,
+            startcol=0,
+            index=True  # ← la categoria va aquí (columna A)
+        )
+
+        ws = writer.sheets[sheet_name]
+
+        # ------------------ TITULOS SUPERIORES ------------------
+        bloques = [(2,4), (5,9), (10,13), (14,16)]
+
+        for start, end in bloques:
+            ws.merge_cells(start_row=1, start_column=start, end_row=1, end_column=end)
+            c = ws.cell(1, start)
+            c.value = "% Absoluto" if start == 2 else "% Relativo Fondo"
+            c.fill = azul_header
+            c.font = font_blanco
+            c.alignment = Alignment(horizontal="center", vertical="center")
+
+        for col in range(2, 17):
+            ws.cell(1, col).fill = azul_header
+
+        # ------------------ HEADERS ------------------
+        for col in range(2, 17):
+            cell = ws.cell(2, col)
+            cell.fill = azul_header
+            cell.font = font_blanco
+            cell.alignment = Alignment(horizontal="center")
+
+        for col in [6,11,16]:
+            ws.cell(2, col).fill = rojo_pf
+
+        for col in [7,12,17]:
+            ws.cell(2, col).fill = beige_ri
+
+        # ------------------ FORMATO FILAS ------------------
+        def get_style(cat):
+            if cat in ["GOVT USD + CORPORATIVOS",
+                       "PEN Duration",
+                       "Local Rates Duration",
+                       "Hard Currency",
+                       "RF Local",
+                       "RF Internacional - EM"]:
+                return gris_total, font_bold, 0
+
+            if cat in ["Nominal", "VAC"]:
+                return azul_claro, None, 1
+
+            return gris_claro, None, 2
+
+        for i, cat in enumerate(categorias_orden):
+            row = i + 3
+            fill, font, indent = get_style(cat)
+
+            for col in range(1, 17):
+                cell = ws.cell(row, col)
+                cell.fill = fill
+                cell.border = border_full
+
+                if col >= 2:
+                    cell.number_format = "0.00%"
+                    cell.alignment = Alignment(horizontal="center")
+
+            ws.cell(row, 1).alignment = Alignment(indent=indent)
+
+            if font:
+                ws.cell(row, 1).font = font
+
+        # ------------------ BORDES GRUESOS ------------------
+        for col in [5,10,14]:
+            for row in range(1, 40):
+                ws.cell(row, col).border = Border(left=thick)
+
+        # ------------------ ANCHO ------------------
+        ws.column_dimensions["A"].width = 35
+
+        for col in range(2, 17):
+            ws.column_dimensions[get_column_letter(col)].width = 12
+
+
+# ### Weights Benchmark
