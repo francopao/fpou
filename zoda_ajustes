@@ -1,0 +1,34 @@
+#Cambio 1 — Función utilitaria nueva (agregar en Sección 3, junto a leer_hoja_excel)
+pythonimport re
+
+def _limpiar_nombre_col(val):
+    """
+    Quita el wrapper de fórmula Excel que openpyxl devuelve como texto crudo.
+    Ejemplos:  '="IQ_NI"'  →  'IQ_NI'
+               '=IQ_NI'    →  'IQ_NI'
+               'Px_last'   →  'Px_last'   (sin cambio)
+    """
+    if isinstance(val, str):
+        m = re.match(r'^="?([^"]+)"?$', val.strip())
+        if m:
+            return m.group(1)
+    return val
+
+#Cambio 2 — En LimpiandoCIQ, una línea después de columnas = ...
+pythondef LimpiandoCIQ(base, fechas_tri, nombre):
+    data_emp = base.loc[:, base.iloc[4] == nombre]
+    columnas = data_emp.iloc[2].tolist()
+    columnas = [_limpiar_nombre_col(c) for c in columnas]   # ← AGREGAR
+    data_emp_ = data_emp.iloc[5:].copy()
+    data_emp_.columns = columnas
+    # ... resto sin cambios
+
+#Cambio 3 — En LimpiandoBBG, la misma línea
+pythondef LimpiandoBBG(base, fechas_diarias, nombre):
+    data_emp = base.loc[:, base.iloc[4] == nombre]
+    columnas = data_emp.iloc[2].tolist()
+    columnas = [_limpiar_nombre_col(c) for c in columnas]   # ← AGREGAR
+    data_emp_ = data_emp.iloc[5:].copy()
+    data_emp_.columns = columnas
+    data_bbg = data_emp_.iloc[:, 4:]   # sin dropna (fix anterior)
+    # ... resto sin cambios
