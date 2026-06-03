@@ -1,0 +1,1416 @@
+
+
+"""
+ZODA Dashboard — Generador de HTML autónomo
+============================================
+Uso:  python zoda_dashboard.py
+Output: ZODA_Dashboard_<DD.MM.YY>.html  (misma carpeta que ZODA.xlsm)
+
+Lee directamente desde ZODA.xlsm (hoja BD, DQ_IN, Parametría).
+No modifica ningún archivo fuente. No toca ZODA_v7.py.
+"""
+
+import os
+import datetime
+import warnings
+import json
+import textwrap
+import base64
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.io as pio
+from plotly.subplots import make_subplots
+
+warnings.filterwarnings("ignore")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFIGURACIÓN — ajustar si cambia la ubicación de ZODA.xlsm
+# ──────────────────────────────────────────────────────────────────────────────
+RUTA_ZODA = (
+    r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA"
+    r"\Docs privados\ZODA\shortcut\ZODA.xlsm"
+)
+RUTA_SALIDA = os.path.dirname(RUTA_ZODA)
+RUTA_LOGO   = os.path.join(os.path.dirname(RUTA_ZODA), "integra_logo.png")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PALETA CORPORATIVA
+# ──────────────────────────────────────────────────────────────────────────────
+C = {
+    "bg":       "#0d1117",
+    "surface":  "#161b22",
+    "border":   "#21262d",
+    "text":     "#e6edf3",
+    "muted":    "#7d8590",
+    "accent":   "#2f81f7",
+    "green":    "#3fb950",
+    "red":      "#f85149",
+    "yellow":   "#d29922",
+    "line":     "#388bfd",
+}
+
+SECTOR_COLOR = {
+    "Financials":           "#2f81f7",
+    "Mining":               "#f0883e",
+    "Utilities":            "#3fb950",
+    "Consumer":             "#bc8cff",
+    "Construction Materials": "#ffa657",
+    "Industrials":          "#79c0ff",
+    "Health Care":          "#ff7b72",
+    "Media":                "#d2a8ff",
+    "Index":                "#7d8590",
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LECTURA DE DATOS
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _read(sheet, **kw):
+    return pd.read_excel(
+        RUTA_ZODA, sheet_name=sheet,
+        engine="openpyxl", dtype=object, **kw
+    )
+
+
+def cargar_bd():
+    df = _read("BD", header=0)
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    df = df.dropna(subset=["Fecha"]).sort_values("Fecha").reset_index(drop=True)
+    for c in df.columns[1:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Reemplazar 0 por NaN en columnas Z (0 = sin dato, no Z = 0)
+    z_cols = [c for c in df.columns if c.startswith("Z_") or c.endswith("Index")]
+    df[z_cols] = df[z_cols].replace(0, np.nan)
+    return df
+
+
+def cargar_parametria():
+    df = _read("Parametría", header=None)
+    param = df.iloc[3:, 1:7].copy()
+    param.columns = ["alias", "z_col", "basket_col", "bvl_col", "bbg_ticker", "sbs_code"]
+    param = param.dropna(subset=["alias"]).reset_index(drop=True)
+    param["alias"]      = param["alias"].astype(str).str.strip()
+    param["z_col"]      = param["z_col"].astype(str).str.strip()
+    param["basket_col"] = param["basket_col"].astype(str).str.strip()
+    param["bvl_col"]    = param["bvl_col"].astype(str).str.strip()
+    param["sbs_code"]   = param["sbs_code"].astype(str).str.strip()
+    return param
+
+
+def cargar_gics():
+    df = _read("GICS", header=0)
+    df = df[["BBG", "GICS", "Empresa"]].dropna(subset=["BBG"]).copy()
+    df["BBG"]    = df["BBG"].astype(str).str.strip()
+    df["GICS"]   = df["GICS"].astype(str).str.strip()
+    df["Empresa"] = df["Empresa"].astype(str).str.strip()
+    return df.set_index("BBG")
+
+
+def cargar_posiciones():
+    """Suma PxQ de Fondo1+2+3 para cada SBS en cada fecha disponible."""
+    df = _read("DQ_IN", header=0)
+    pxq = df[df["Dato"].astype(str) == "PxQ"].copy()
+    pxq["Fecha"] = pd.to_datetime(pxq["Fecha"], errors="coerce")
+    pxq = pxq.dropna(subset=["Fecha"])
+    sbs_cols = list(df.columns[5:])
+
+    records = []
+    for fecha, grupo in pxq.groupby("Fecha"):
+        row = {"Fecha": fecha}
+        for sbs in sbs_cols:
+            vals = pd.to_numeric(grupo[sbs], errors="coerce").fillna(0)
+            row[sbs] = vals.sum() / 100_000
+        records.append(row)
+
+    pos = pd.DataFrame(records).set_index("Fecha").sort_index()
+    return pos
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# INTERPRETACIÓN AUTOMÁTICA DEL Z-SCORE
+# ──────────────────────────────────────────────────────────────────────────────
+
+def interpretar_z(z_val, percentil, empresa):
+    """
+    Devuelve (señal, color, texto_corto, texto_largo) según el Z y su percentil.
+    Lógica: Asness et al. (2013) — value signal es más confiable cuando
+    el Z es extremo Y el percentil histórico lo confirma.
+    """
+    if z_val is None or np.isnan(z_val):
+        return "Sin dato", C["muted"], "Sin dato suficiente", (
+            "No hay historia suficiente para calcular el Z-score en este período."
+        )
+
+    pct_txt = f"percentil {percentil:.0f}" if percentil is not None else ""
+
+    if z_val > 1.5:
+        return (
+            "CARA",
+            C["red"],
+            f"Z = {z_val:+.2f} — Valorización elevada ({pct_txt})",
+            (
+                f"{empresa} cotiza con una prima histórica significativa. "
+                f"El múltiplo actual está {z_val:.1f} desviaciones estándar por "
+                f"encima de su media. Históricamente, lecturas en este rango han "
+                f"precedido compresiones de múltiplo. Revisar si existe catalizador "
+                f"justificado (M&A, guidance revision, momentum sectorial)."
+            ),
+        )
+    elif z_val > 0.5:
+        return (
+            "MODERADAMENTE CARA",
+            C["yellow"],
+            f"Z = {z_val:+.2f} — Leve presión alcista de múltiplo ({pct_txt})",
+            (
+                f"{empresa} muestra un múltiplo por encima de su media histórica, "
+                f"aunque dentro de rangos manejables. La señal no es de venta, "
+                f"pero reduce el margen de seguridad. Monitorear si el avance "
+                f"responde a momentum de precio o a revisión real de fundamentales."
+            ),
+        )
+    elif z_val > -0.5:
+        return (
+            "NEUTRAL",
+            C["muted"],
+            f"Z = {z_val:+.2f} — Dentro de rango histórico normal ({pct_txt})",
+            (
+                f"{empresa} cotiza en zona de valorización neutra. "
+                f"No hay señal direccional clara desde el múltiplo. "
+                f"El diferencial frente a pares (Z Basket) y frente al mercado "
+                f"local (Z BVL) son más informativos en este rango."
+            ),
+        )
+    elif z_val > -1.5:
+        return (
+            "MODERADAMENTE BARATA",
+            C["accent"],
+            f"Z = {z_val:+.2f} — Descuento moderado ({pct_txt})",
+            (
+                f"{empresa} cotiza con un descuento respecto a su historia. "
+                f"La señal de valor está presente pero aún no en zona extrema. "
+                f"Validar con Z Basket: si ambos son negativos, la señal es más "
+                f"robusta. Lakonishok et al. (1994) muestran que retornos superiores "
+                f"se concentran en acciones con múltiplos persistentemente bajos."
+            ),
+        )
+    else:
+        return (
+            "BARATA",
+            C["green"],
+            f"Z = {z_val:+.2f} — Descuento histórico significativo ({pct_txt})",
+            (
+                f"{empresa} está en zona de descuento histórico profundo. "
+                f"Según Asness, Moskowitz & Pedersen (2013), señales de valor "
+                f"con Z < −1.5 sostenidas más de 3 meses tienen alta probabilidad "
+                f"de reversión. Verificar que el descuento no esté justificado por "
+                f"deterioro estructural de fundamentales antes de actuar."
+            ),
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRÁFICO 1 — SERIE HISTÓRICA DE Z-SCORE
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_historico(bd, param, gics):
+    """
+    Retorna lista de trazas y datos JSON para el gráfico histórico interactivo.
+    Un trace por empresa; solo uno visible a la vez (controlado por JS).
+    """
+    empresas_bd = [
+        r for _, r in param.iterrows()
+        if str(r["z_col"]) in bd.columns and not str(r["z_col"]).startswith("nan")
+    ]
+
+    traces = []
+    interpretaciones = {}
+
+    for r in empresas_bd:
+        alias   = r["alias"]
+        z_col   = r["z_col"]
+        bk_col  = r["basket_col"] if r["basket_col"] in bd.columns else None
+        bvl_col = r["bvl_col"]    if r["bvl_col"]    in bd.columns else None
+        bbg     = r["bbg_ticker"]
+        sector  = gics.loc[bbg, "GICS"] if bbg in gics.index else "Index"
+        empresa_nombre = gics.loc[bbg, "Empresa"] if bbg in gics.index else alias
+        color   = SECTOR_COLOR.get(sector, C["muted"])
+
+        serie = bd[["Fecha", z_col]].dropna(subset=[z_col]).copy()
+        if serie.empty:
+            continue
+
+        # Z actual (última fecha con dato)
+        z_actual = serie[z_col].iloc[-1]
+        # Percentil histórico del Z actual
+        pct = (serie[z_col] < z_actual).mean() * 100
+
+        # Trace principal Z
+        traces.append(dict(
+            alias=alias,
+            x=serie["Fecha"].dt.strftime("%Y-%m-%d").tolist(),
+            y=serie[z_col].round(4).tolist(),
+            y_basket=bd[["Fecha", bk_col]].dropna(subset=[bk_col])[bk_col].round(4).tolist()
+                     if bk_col else [],
+            x_basket=bd[["Fecha", bk_col]].dropna(subset=[bk_col])["Fecha"]
+                     .dt.strftime("%Y-%m-%d").tolist() if bk_col else [],
+            y_bvl=bd[["Fecha", bvl_col]].dropna(subset=[bvl_col])[bvl_col].round(4).tolist()
+                  if bvl_col else [],
+            x_bvl=bd[["Fecha", bvl_col]].dropna(subset=[bvl_col])["Fecha"]
+                  .dt.strftime("%Y-%m-%d").tolist() if bvl_col else [],
+            color=color,
+            sector=sector,
+            empresa=empresa_nombre,
+            z_actual=round(z_actual, 4) if not np.isnan(z_actual) else None,
+            percentil=round(pct, 1),
+        ))
+
+        señal, sig_color, txt_corto, txt_largo = interpretar_z(z_actual, pct, empresa_nombre)
+        interpretaciones[alias] = dict(
+            señal=señal, color=sig_color,
+            corto=txt_corto, largo=txt_largo,
+            z_actual=round(z_actual, 4) if not np.isnan(z_actual) else None,
+            percentil=round(pct, 1),
+        )
+
+    return traces, interpretaciones
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRÁFICO 2 — BUBBLE CHART (Monitor)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_bubble_data(bd, param, gics, posiciones):
+    """
+    Retorna datos JSON para el bubble chart por fecha.
+    Para cada fecha disponible en BD: X=Z_empresa, Y=Z_Basket o Z_BVL,
+    size=posición en PEN (S/. 100k), color=sector.
+    """
+    # Fechas válidas en BD (con algún Z no-NaN)
+    z_emp_cols = [
+        c for c in bd.columns
+        if c.startswith("Z_") and "Basket" not in c and "BVL" not in c
+        and "MXLA" not in c and "Index" not in c
+    ]
+    fechas_bd = bd.loc[bd[z_emp_cols].notna().any(axis=1), "Fecha"]
+    fechas_bd = fechas_bd.dt.normalize().unique()
+
+    # Última fecha de posiciones disponible
+    if not posiciones.empty:
+        last_pos_date = posiciones.index.max()
+    else:
+        last_pos_date = None
+
+    empresas = [
+        r for _, r in param.iterrows()
+        if str(r["z_col"]) in bd.columns and not str(r["z_col"]).startswith("nan")
+    ]
+
+    # Construir datos por fecha (solo las últimas 400 para no saturar el HTML)
+    fechas_sample = sorted(fechas_bd)[-400:]
+
+    bubble_by_date = {}
+    for fecha in fechas_sample:
+        fkey = fecha.strftime("%Y-%m-%d")
+        row_bd = bd[bd["Fecha"].dt.normalize() == fecha]
+        if row_bd.empty:
+            continue
+        row_bd = row_bd.iloc[-1]
+
+        # Posición: usar la fecha más cercana disponible en DQ_IN
+        if last_pos_date is not None:
+            pos_fecha = posiciones.index[posiciones.index <= fecha]
+            if len(pos_fecha) == 0:
+                pos_row = None
+            else:
+                pos_row = posiciones.loc[pos_fecha[-1]]
+        else:
+            pos_row = None
+
+        puntos = []
+        for r in empresas:
+            alias   = r["alias"]
+            z_col   = r["z_col"]
+            bk_col  = r["basket_col"]
+            bvl_col = r["bvl_col"]
+            sbs     = str(r["sbs_code"])
+            bbg     = r["bbg_ticker"]
+            sector  = gics.loc[bbg, "GICS"] if bbg in gics.index else "Index"
+            empresa_nombre = gics.loc[bbg, "Empresa"] if bbg in gics.index else alias
+
+            z_abs = row_bd.get(z_col, np.nan)
+            z_bk  = row_bd.get(bk_col, np.nan) if bk_col in bd.columns else np.nan
+            z_bvl = row_bd.get(bvl_col, np.nan) if bvl_col in bd.columns else np.nan
+
+            if pd.isna(z_abs):
+                continue
+
+            # Tamaño de burbuja
+            if pos_row is not None and sbs in pos_row.index and pd.notna(pos_row[sbs]):
+                size = float(pos_row[sbs])
+            else:
+                size = 1500  # fallback para índices / sin posición
+
+            puntos.append(dict(
+                alias=alias,
+                empresa=empresa_nombre,
+                sector=sector,
+                color=SECTOR_COLOR.get(sector, C["muted"]),
+                z_abs=round(float(z_abs), 4),
+                z_basket=round(float(z_bk), 4) if not pd.isna(z_bk) else None,
+                z_bvl=round(float(z_bvl), 4) if not pd.isna(z_bvl) else None,
+                size=round(size, 1),
+            ))
+
+        if puntos:
+            bubble_by_date[fkey] = puntos
+
+    return bubble_by_date
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRÁFICO 3 — HEATMAP DE RÉGIMEN (últimos 12 meses, frecuencia semanal)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_heatmap_data(bd, param, gics):
+    """
+    Retorna matriz de Z-scores semanales para los últimos 12 meses.
+    Filas = empresas, columnas = fechas semanales (viernes).
+    """
+    empresas = [
+        r for _, r in param.iterrows()
+        if str(r["z_col"]) in bd.columns and not str(r["z_col"]).startswith("nan")
+        and "Index" not in str(r["z_col"])
+    ]
+
+    last_date = bd["Fecha"].max()
+    start_date = last_date - pd.DateOffset(months=12)
+
+    # Fechas semanales (viernes)
+    fechas_semana = pd.date_range(start=start_date, end=last_date, freq="W-FRI")
+    # Alinear cada viernes a la última fecha disponible en BD ≤ ese viernes
+    bd_sorted = bd.sort_values("Fecha")
+
+    heat_rows = []
+    labels = []
+    sectores = []
+    empresas_nombres = []
+
+    for r in empresas:
+        alias   = r["alias"]
+        z_col   = r["z_col"]
+        bbg     = r["bbg_ticker"]
+        sector  = gics.loc[bbg, "GICS"] if bbg in gics.index else "Other"
+        nombre  = gics.loc[bbg, "Empresa"] if bbg in gics.index else alias
+
+        serie = bd_sorted[["Fecha", z_col]].dropna(subset=[z_col]).set_index("Fecha")[z_col]
+        if serie.empty:
+            continue
+
+        row_vals = []
+        for viernes in fechas_semana:
+            disponibles = serie[serie.index <= viernes]
+            if disponibles.empty:
+                row_vals.append(None)
+            else:
+                row_vals.append(round(float(disponibles.iloc[-1]), 4))
+
+        # Solo incluir si tiene al menos 6 meses de datos en el período
+        n_validos = sum(v is not None for v in row_vals)
+        if n_validos < len(fechas_semana) // 2:
+            continue
+
+        heat_rows.append(row_vals)
+        labels.append(alias)
+        sectores.append(sector)
+        empresas_nombres.append(nombre)
+
+    fechas_str = [f.strftime("%Y-%m-%d") for f in fechas_semana]
+
+    return dict(
+        z=heat_rows,
+        x=fechas_str,
+        y=labels,
+        sectores=sectores,
+        empresas=empresas_nombres,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONSTRUCCIÓN DEL HTML
+# ──────────────────────────────────────────────────────────────────────────────
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZODA — Monitor de Valorización · AFP Integra</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,600;1,300&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* AFP Integra brand */
+  --brand-navy:  #0033A0;
+  --brand-teal:  #00AEC7;
+  --brand-white: #FFFFFF;
+  /* Dark surface system */
+  --bg:      #07101f;
+  --surface: #0d1a2e;
+  --surface2:#111f38;
+  --border:  #1a2f50;
+  --text:    #ddeeff;
+  --muted:   #6a85a8;
+  --accent:  #00AEC7;
+  --green:   #29d68b;
+  --red:     #f24b4b;
+  --yellow:  #e0a720;
+  --mono:    'IBM Plex Mono', monospace;
+  --sans:    'IBM Plex Sans', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+.header {
+  background: var(--brand-navy);
+  border-bottom: 3px solid var(--brand-teal);
+  padding: 14px 32px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  position: sticky; top: 0; z-index: 100;
+}
+.header-logo {
+  height: 32px;
+  width: auto;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.header-logo-placeholder {
+  height: 32px;
+  width: 120px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 3px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.5);
+  letter-spacing: 0.1em;
+}
+.header-divider {
+  width: 1px; height: 28px;
+  background: rgba(255,255,255,0.2);
+  flex-shrink: 0;
+}
+.header-title {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--brand-white);
+}
+.header-sub {
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+  letter-spacing: 0.04em;
+}
+.header-spacer { flex: 1; }
+.header-meta {
+  text-align: right;
+}
+.header-date {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--brand-teal);
+  letter-spacing: 0.05em;
+}
+.header-author {
+  font-size: 9px;
+  color: rgba(255,255,255,0.25);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+  font-style: italic;
+}
+
+/* ── Layout ── */
+.main { padding: 28px 32px; max-width: 1440px; margin: 0 auto; }
+
+.section { margin-bottom: 52px; }
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.section-num {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--brand-teal);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  background: rgba(0,174,199,0.1);
+  border: 1px solid rgba(0,174,199,0.25);
+  padding: 2px 7px;
+  border-radius: 3px;
+}
+.section-title { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
+.section-desc  { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+/* ── Controls ── */
+.controls {
+  display: flex; gap: 12px; align-items: flex-end;
+  flex-wrap: wrap; margin-bottom: 16px;
+}
+.control-group { display: flex; flex-direction: column; gap: 4px; }
+.control-label {
+  font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--muted);
+}
+select, input[type=date] {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--mono); font-size: 12px;
+  padding: 6px 10px; border-radius: 4px; outline: none; cursor: pointer;
+  min-width: 200px; transition: border-color .15s;
+}
+select:hover, input[type=date]:hover,
+select:focus, input[type=date]:focus { border-color: var(--brand-teal); }
+
+.toggle-group {
+  display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+}
+.toggle-btn {
+  background: var(--surface2); border: none; color: var(--muted);
+  font-family: var(--mono); font-size: 11px; padding: 6px 14px;
+  cursor: pointer; transition: all .15s;
+}
+.toggle-btn.active { background: var(--brand-navy); color: var(--brand-teal); border-bottom: 2px solid var(--brand-teal); }
+.toggle-btn:hover:not(.active) { background: var(--border); color: var(--text); }
+
+/* ── Plot container ── */
+.plot-wrap {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden;
+}
+
+/* ── Interpretation panel ── */
+.interp-panel {
+  margin-top: 12px; background: var(--surface);
+  border: 1px solid var(--border); border-left: 3px solid var(--brand-teal);
+  border-radius: 6px; padding: 16px 20px;
+  display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start;
+}
+.interp-badge {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.1em; padding: 4px 10px; border-radius: 3px;
+  white-space: nowrap; text-transform: uppercase;
+}
+.interp-short { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.interp-long  { font-size: 11px; color: var(--muted); line-height: 1.65; }
+.interp-meta  { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 8px; }
+
+/* ── Footnote ── */
+.footnote {
+  font-size: 9px; color: var(--muted); letter-spacing: 0.02em;
+  margin-top: 10px; padding-left: 8px;
+  border-left: 2px solid var(--brand-teal); line-height: 1.7;
+}
+.footnote em { color: rgba(255,255,255,0.4); }
+
+/* ── Legend ── */
+.legend-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; }
+.legend-item {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; color: var(--muted); cursor: pointer; user-select: none;
+}
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Footer ── */
+.footer {
+  border-top: 1px solid var(--border);
+  padding: 16px 32px;
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 32px;
+}
+.footer-brand {
+  font-family: var(--mono); font-size: 9px;
+  color: var(--brand-teal); letter-spacing: 0.1em; text-transform: uppercase;
+}
+.footer-disclaimer {
+  font-size: 9px; color: var(--muted); line-height: 1.5; flex: 1;
+}
+.footer-author {
+  font-size: 9px; color: rgba(255,255,255,0.18);
+  font-style: italic; font-family: var(--sans);
+  letter-spacing: 0.02em;
+}
+
+/* ── Loading ── */
+#loading {
+  position: fixed; inset: 0; background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 999; font-family: var(--mono); font-size: 13px;
+  color: var(--muted); letter-spacing: 0.08em;
+  flex-direction: column; gap: 16px;
+}
+.spinner {
+  width: 28px; height: 28px;
+  border: 2px solid var(--border);
+  border-top-color: var(--brand-teal);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <span>Cargando ZODA Dashboard…</span>
+</div>
+
+<!-- ════════════════════ HEADER ════════════════════ -->
+<div class="header">
+  <img id="logo-img" class="header-logo" src="__LOGO_B64__" alt="AFP Integra"
+       onerror="this.style.display='none';document.getElementById('logo-ph').style.display='flex'">
+  <div id="logo-ph" class="header-logo-placeholder" style="display:none">AFP INTEGRA</div>
+  <div class="header-divider"></div>
+  <div>
+    <div class="header-title">ZODA</div>
+    <div class="header-sub">Monitor de Valorización · Renta Variable</div>
+  </div>
+  <div class="header-spacer"></div>
+  <div class="header-meta">
+    <div class="header-date" id="hdr-date"></div>
+    <div class="header-author">Franco Olivares</div>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ══ 01 HISTÓRICO ══ -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">01</span>
+      <span class="section-title">Evolución Histórica del Z-Score</span>
+      <span class="section-desc">Z compuesto · 1Y × 33% + 3Y × 33% + 5Y × 33%</span>
+    </div>
+    <div class="controls">
+      <div class="control-group">
+        <span class="control-label">Empresa</span>
+        <select id="sel-empresa" onchange="onEmpresaChange()"></select>
+      </div>
+      <div class="control-group">
+        <span class="control-label">Tipo de Z</span>
+        <div class="toggle-group">
+          <button class="toggle-btn active" id="btn-z-abs"    onclick="onZType('abs')">Absoluto</button>
+          <button class="toggle-btn"        id="btn-z-basket" onclick="onZType('basket')">vs Basket</button>
+          <button class="toggle-btn"        id="btn-z-bvl"    onclick="onZType('bvl')">vs BVL</button>
+        </div>
+      </div>
+    </div>
+    <div class="plot-wrap"><div id="plot-hist" style="height:360px;"></div></div>
+    <div class="interp-panel" id="interp-panel">
+      <span class="interp-badge" id="interp-badge">—</span>
+      <div>
+        <div class="interp-short" id="interp-short">Selecciona una empresa</div>
+        <div class="interp-long"  id="interp-long"></div>
+        <div class="interp-meta"  id="interp-meta"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 02 BUBBLE CHART ══ -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">02</span>
+      <span class="section-title">Monitor de Posición — Mapa de Valorización</span>
+      <span class="section-desc">Tamaño de burbuja ∝ posición consolidada Fondos 1+2+3 (S/. 100k)</span>
+    </div>
+    <div class="controls">
+      <div class="control-group">
+        <span class="control-label">Fecha</span>
+        <input type="date" id="sel-fecha-bubble" onchange="onBubbleFecha()">
+      </div>
+      <div class="control-group">
+        <span class="control-label">Eje Y</span>
+        <div class="toggle-group">
+          <button class="toggle-btn active" id="btn-y-basket" onclick="onYAxis('basket')">vs Basket</button>
+          <button class="toggle-btn"        id="btn-y-bvl"    onclick="onYAxis('bvl')">vs BVL</button>
+        </div>
+      </div>
+    </div>
+    <div class="legend-row" id="bubble-legend"></div>
+    <div class="plot-wrap"><div id="plot-bubble" style="height:520px;"></div></div>
+  </div>
+
+  <!-- ══ 03 HEATMAP ══ -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">03</span>
+      <span class="section-title">Régimen de Valorización — Mapa de Calor 12 meses</span>
+      <span class="section-desc">Frecuencia semanal · Verde = barata · Rojo = cara</span>
+    </div>
+    <div class="plot-wrap"><div id="plot-heat" style="min-height:480px;"></div></div>
+    <p class="footnote">
+      ¹ Inspirado en el factor exposure dashboard de BlackRock Investment Institute.
+      Ref.: Asness, C., Moskowitz, T. &amp; Pedersen, L. (2013). <em>Value and Momentum Everywhere.</em>
+      <em>Journal of Finance</em>, 68(3), 929–985. Señales de valor sostenidas ≥ 3 meses
+      (Z &lt; −1.5) presentan estadísticamente mayor probabilidad de reversión hacia la media histórica.
+    </p>
+  </div>
+
+  <!-- ══ 04 EQRV PERCENTILE CHART ══ -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">04</span>
+      <span class="section-title">Distribución Histórica del Z-Score — Estilo EQRV</span>
+      <span class="section-desc">Valor actual vs percentiles históricos · Agrupado por sector</span>
+    </div>
+    <div class="controls">
+      <div class="control-group">
+        <span class="control-label">Ordenar por</span>
+        <div class="toggle-group">
+          <button class="toggle-btn active" id="btn-sort-sec"  onclick="onEqrvSort('sector')">Sector</button>
+          <button class="toggle-btn"        id="btn-sort-z"    onclick="onEqrvSort('z')">Z actual ↓</button>
+          <button class="toggle-btn"        id="btn-sort-pct"  onclick="onEqrvSort('pct')">Percentil ↓</button>
+        </div>
+      </div>
+    </div>
+    <div class="plot-wrap"><div id="plot-eqrv" style="height:520px;"></div></div>
+    <p class="footnote">
+      ² Inspirado en el <em>Equity Relative Valuation</em> (EQRV) de Bloomberg Terminal
+      y en los gráficos de percentil de PE Forward de J.P. Morgan Asset Management —
+      <em>Guide to the Markets</em> (Q1 2026). Muestra dónde se sitúa el Z actual respecto
+      a su propia distribución histórica: banda p10–p90 (rango amplio), caja p25–p75 (rango intercuartil),
+      mediana (línea punteada) y valor actual (diamante). Un Z en el extremo superior del rango p10–p90
+      indica compresión de múltiplo estadísticamente elevada.
+    </p>
+  </div>
+
+</div><!-- /main -->
+
+<!-- ════════════════════ FOOTER ════════════════════ -->
+<div class="footer">
+  <span class="footer-brand">AFP Integra · ZODA</span>
+  <span class="footer-disclaimer">
+    Uso interno exclusivo. Información elaborada a partir de datos de Bloomberg y Capital IQ.
+    No constituye asesoramiento de inversión. Los Z-scores son indicadores cuantitativos
+    sujetos a revisión por el equipo de inversiones.
+  </span>
+  <span class="footer-author">Franco Olivares</span>
+</div>
+
+<script>
+// ── Datos embebidos ──────────────────────────────────────────────────────────
+const HIST_DATA   = __HIST_DATA__;
+const INTERP_DATA = __INTERP_DATA__;
+const BUBBLE_DATA = __BUBBLE_DATA__;
+const HEAT_DATA   = __HEAT_DATA__;
+const EQRV_DATA   = __EQRV_DATA__;
+const LAST_DATE   = "__LAST_DATE__";
+const GEN_DATE    = "__GEN_DATE__";
+
+// ── Estado global ────────────────────────────────────────────────────────────
+let currentEmpresa    = null;
+let currentZType      = 'abs';
+let currentYAxis      = 'basket';
+let currentBubbleFecha = null;
+let eqrvSortMode      = 'sector';
+
+// ── Paleta AFP Integra ───────────────────────────────────────────────────────
+const C = {
+  bg:'#07101f', surface:'#0d1a2e', surface2:'#111f38', border:'#1a2f50',
+  text:'#ddeeff', muted:'#6a85a8',
+  navy:'#0033A0', teal:'#00AEC7',
+  green:'#29d68b', red:'#f24b4b', yellow:'#e0a720',
+};
+
+const LAYOUT_BASE = {
+  paper_bgcolor: C.surface,
+  plot_bgcolor:  C.surface,
+  font:  { family:"'IBM Plex Mono', monospace", size:11, color:C.muted },
+  margin: { t:20, r:20, b:40, l:55 },
+  xaxis: { gridcolor:C.border, linecolor:C.border, tickcolor:C.border, zeroline:false },
+  yaxis: { gridcolor:C.border, linecolor:C.border, tickcolor:C.border, zeroline:false },
+  hoverlabel: {
+    bgcolor:'#0d1a2e', bordercolor:C.border,
+    font:{ family:"'IBM Plex Mono', monospace", size:11, color:C.text }
+  },
+  showlegend: false,
+};
+
+const CONFIG = {
+  displayModeBar:true,
+  modeBarButtonsToRemove:['select2d','lasso2d','autoScale2d'],
+  displaylogo:false, responsive:true,
+};
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  document.getElementById('hdr-date').textContent = 'Actualizado: ' + GEN_DATE;
+  // Hide logo if no b64 data
+  const logo = document.getElementById('logo-img');
+  if (!logo.src || logo.src === 'data:image/png;base64,') {
+    logo.style.display = 'none';
+    document.getElementById('logo-ph').style.display = 'flex';
+  }
+
+  populateEmpresaSelector();
+  initBubbleFecha();
+  renderHeatmap();
+  renderEqrv();
+
+  if (HIST_DATA.length > 0) {
+    currentEmpresa = HIST_DATA[0].alias;
+    document.getElementById('sel-empresa').value = currentEmpresa;
+    renderHistorico();
+    renderBubble();
+  }
+  document.getElementById('loading').style.display = 'none';
+});
+
+// ── Selector empresa ─────────────────────────────────────────────────────────
+function populateEmpresaSelector() {
+  const sel = document.getElementById('sel-empresa');
+  HIST_DATA.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.alias;
+    opt.textContent = `${d.alias}  —  ${d.sector}`;
+    sel.appendChild(opt);
+  });
+}
+function onEmpresaChange() {
+  currentEmpresa = document.getElementById('sel-empresa').value;
+  renderHistorico();
+}
+function onZType(t) {
+  currentZType = t;
+  ['abs','basket','bvl'].forEach(x =>
+    document.getElementById('btn-z-'+x).classList.toggle('active', x===t));
+  renderHistorico();
+}
+
+// ── GRÁFICO 1 — HISTÓRICO ────────────────────────────────────────────────────
+function renderHistorico() {
+  const d = HIST_DATA.find(x => x.alias === currentEmpresa);
+  if (!d) return;
+
+  let x, y, yLabel;
+  if (currentZType==='basket' && d.x_basket.length>0) {
+    x=d.x_basket; y=d.y_basket; yLabel='Z vs Basket';
+  } else if (currentZType==='bvl' && d.x_bvl.length>0) {
+    x=d.x_bvl; y=d.y_bvl; yLabel='Z vs BVL (SPBLPGPT)';
+  } else {
+    x=d.x; y=d.y; yLabel='Z Absoluto';
+  }
+
+  const lineColor = (d.z_actual||0) > 0 ? C.red : C.green;
+
+  const traceArea = {
+    x, y, type:'scatter', mode:'none',
+    fill:'tozeroy', fillcolor:lineColor+'18', hoverinfo:'skip',
+  };
+  const trace = {
+    x, y, type:'scatter', mode:'lines',
+    line:{color:lineColor, width:1.8},
+    hovertemplate:'%{x}<br><b>Z = %{y:.3f}</b><extra></extra>',
+  };
+
+  const shapes = [
+    {type:'line',x0:x[0],x1:x[x.length-1],y0:1.5,y1:1.5,line:{color:C.red,width:1,dash:'dot'}},
+    {type:'line',x0:x[0],x1:x[x.length-1],y0:-1.5,y1:-1.5,line:{color:C.green,width:1,dash:'dot'}},
+    {type:'line',x0:x[0],x1:x[x.length-1],y0:.5,y1:.5,line:{color:C.yellow,width:.7,dash:'dot'}},
+    {type:'line',x0:x[0],x1:x[x.length-1],y0:-.5,y1:-.5,line:{color:C.yellow,width:.7,dash:'dot'}},
+    {type:'line',x0:x[0],x1:x[x.length-1],y0:0,y1:0,line:{color:C.muted,width:1}},
+  ];
+  const annotations = [
+    {x:x[x.length-1],y:1.5,text:'+1.5σ',showarrow:false,font:{size:9,color:C.red},xanchor:'right',yanchor:'bottom'},
+    {x:x[x.length-1],y:-1.5,text:'−1.5σ',showarrow:false,font:{size:9,color:C.green},xanchor:'right',yanchor:'top'},
+  ];
+
+  Plotly.react('plot-hist', [traceArea,trace], {
+    ...LAYOUT_BASE, shapes, annotations,
+    yaxis:{...LAYOUT_BASE.yaxis, title:{text:yLabel,font:{size:10}}},
+    margin:{t:16,r:20,b:36,l:55},
+  }, CONFIG);
+
+  updateInterpretacion(d);
+}
+
+function updateInterpretacion(d) {
+  const interp = INTERP_DATA[d.alias];
+  if (!interp) return;
+  const badge = document.getElementById('interp-badge');
+  badge.textContent = interp.señal;
+  badge.style.background = interp.color+'22';
+  badge.style.color = interp.color;
+  badge.style.border = `1px solid ${interp.color}44`;
+  document.getElementById('interp-short').textContent = interp.corto;
+  document.getElementById('interp-long').textContent  = interp.largo;
+  const pct = interp.percentil!=null ? ` · Percentil histórico: ${interp.percentil.toFixed(0)}°` : '';
+  document.getElementById('interp-meta').textContent =
+    `${d.empresa} · ${d.sector}${pct}`;
+}
+
+// ── GRÁFICO 2 — BUBBLE CHART ─────────────────────────────────────────────────
+function initBubbleFecha() {
+  const fechas = Object.keys(BUBBLE_DATA).sort();
+  currentBubbleFecha = fechas[fechas.length-1];
+  const inp = document.getElementById('sel-fecha-bubble');
+  inp.value = currentBubbleFecha;
+  inp.min = fechas[0]; inp.max = fechas[fechas.length-1];
+  buildBubbleLegend();
+}
+function onBubbleFecha() {
+  const inp = document.getElementById('sel-fecha-bubble');
+  const fechas = Object.keys(BUBBLE_DATA).sort();
+  let best = fechas[0];
+  for (const f of fechas) { if (f <= inp.value) best = f; }
+  currentBubbleFecha = best;
+  renderBubble();
+}
+function onYAxis(a) {
+  currentYAxis = a;
+  ['basket','bvl'].forEach(x =>
+    document.getElementById('btn-y-'+x).classList.toggle('active',x===a));
+  renderBubble();
+}
+const hiddenSectors = new Set();
+function buildBubbleLegend() {
+  const sectores = {};
+  Object.values(BUBBLE_DATA).forEach(pts => pts.forEach(p => { sectores[p.sector]=p.color; }));
+  const row = document.getElementById('bubble-legend');
+  row.innerHTML='';
+  Object.entries(sectores).forEach(([sec,col]) => {
+    row.innerHTML+=`<div class="legend-item" onclick="toggleSector('${sec}')">
+      <div class="legend-dot" style="background:${col}"></div><span>${sec}</span></div>`;
+  });
+}
+function toggleSector(sec) {
+  hiddenSectors.has(sec)?hiddenSectors.delete(sec):hiddenSectors.add(sec);
+  renderBubble();
+}
+function renderBubble() {
+  const puntos = (BUBBLE_DATA[currentBubbleFecha]||[]).filter(p=>!hiddenSectors.has(p.sector));
+  if (!puntos.length) { Plotly.react('plot-bubble',[],{...LAYOUT_BASE},CONFIG); return; }
+
+  const yKey   = currentYAxis==='basket'?'z_basket':'z_bvl';
+  const yLabel = currentYAxis==='basket'?'Z vs Basket':'Z vs BVL';
+
+  const bySector={};
+  puntos.forEach(p=>{ if(!bySector[p.sector]) bySector[p.sector]=[]; bySector[p.sector].push(p); });
+
+  const traces = Object.entries(bySector).map(([sec,pts]) => {
+    const valid=pts.filter(p=>p[yKey]!==null);
+    return {
+      type:'scatter', mode:'markers+text',
+      x:valid.map(p=>p.z_abs), y:valid.map(p=>p[yKey]),
+      text:valid.map(p=>p.alias), textposition:'top center',
+      textfont:{size:9,color:'#ddeeff'},
+      marker:{
+        size:valid.map(p=>Math.max(8,Math.sqrt(p.size)*0.06*60)),
+        color:valid[0]?.color+'bb', line:{color:valid[0]?.color,width:1.2},
+        sizemode:'diameter',
+      },
+      hovertemplate:'<b>%{text}</b><br>Z Abs: %{x:.3f}<br>'+yLabel+': %{y:.3f}<extra>'+sec+'</extra>',
+      name:sec,
+    };
+  });
+
+  const shapes=[
+    {type:'rect',x0:0,x1:6,y0:0,y1:6,fillcolor:C.red+'0e',line:{width:0}},
+    {type:'rect',x0:-6,x1:0,y0:-6,y1:0,fillcolor:C.green+'0e',line:{width:0}},
+    {type:'line',x0:-6,x1:6,y0:0,y1:0,line:{color:C.muted,width:.8}},
+    {type:'line',x0:0,x1:0,y0:-6,y1:6,line:{color:C.muted,width:.8}},
+    // AFP Integra brand accent lines
+    {type:'line',x0:-6,x1:6,y0:1.5,y1:1.5,line:{color:C.red,width:.6,dash:'dot'}},
+    {type:'line',x0:-6,x1:6,y0:-1.5,y1:-1.5,line:{color:C.green,width:.6,dash:'dot'}},
+    {type:'line',x0:1.5,x1:1.5,y0:-6,y1:6,line:{color:C.red,width:.6,dash:'dot'}},
+    {type:'line',x0:-1.5,x1:-1.5,y0:-6,y1:6,line:{color:C.green,width:.6,dash:'dot'}},
+  ];
+  const annotations=[
+    {x:4,y:4,text:'CARA / CARA',showarrow:false,font:{size:9,color:C.red+'99'},xref:'x',yref:'y'},
+    {x:-4,y:-4,text:'BARATA / BARATA',showarrow:false,font:{size:9,color:C.green+'99'},xref:'x',yref:'y'},
+    {x:-4,y:4,text:'BARATA / CARA',showarrow:false,font:{size:9,color:C.yellow+'99'},xref:'x',yref:'y'},
+    {x:4,y:-4,text:'CARA / BARATA',showarrow:false,font:{size:9,color:C.yellow+'99'},xref:'x',yref:'y'},
+  ];
+
+  Plotly.react('plot-bubble', traces, {
+    ...LAYOUT_BASE, showlegend:true, shapes, annotations,
+    legend:{bgcolor:C.surface,bordercolor:C.border,borderwidth:1,font:{size:10},orientation:'h',x:0,y:-0.12},
+    xaxis:{...LAYOUT_BASE.xaxis,title:{text:'Z Absoluto',font:{size:10}},zeroline:false},
+    yaxis:{...LAYOUT_BASE.yaxis,title:{text:yLabel,font:{size:10}},zeroline:false},
+    margin:{t:16,r:20,b:60,l:55},
+    title:{text:`Monitor · ${currentBubbleFecha}`,font:{size:11,color:C.muted},x:.01,xanchor:'left'},
+  }, CONFIG);
+}
+
+// ── GRÁFICO 3 — HEATMAP ──────────────────────────────────────────────────────
+function renderHeatmap() {
+  const d = HEAT_DATA;
+  if (!d||!d.z||!d.z.length) return;
+  const z_clean = d.z.map(row=>row.map(v=>v===null?NaN:v));
+  const yLabels = d.y.map((a,i)=>`${a} · ${d.sectores[i]}`);
+
+  const trace = {
+    type:'heatmap', x:d.x, y:yLabels, z:z_clean,
+    colorscale:[
+      [0,'#166534'],[.3,C.green],[.45,'#3a5f4a'],
+      [.48,C.muted],[.52,C.muted],
+      [.55,'#7a2e2e'],[.7,C.red],[1,'#7f1d1d'],
+    ],
+    zmid:0, zmin:-2.5, zmax:2.5,
+    colorbar:{
+      title:{text:'Z',font:{size:10}},
+      thickness:10, len:.65, tickfont:{size:9},
+      bgcolor:C.surface, bordercolor:C.border,
+      tickvals:[-2,-1,0,1,2],
+      ticktext:['−2','−1','0','+1','+2'],
+    },
+    hovertemplate:'<b>%{y}</b><br>Semana: %{x}<br><b>Z = %{z:.3f}</b><extra></extra>',
+    xgap:1, ygap:1,
+  };
+
+  Plotly.react('plot-heat',[trace],{
+    ...LAYOUT_BASE,
+    height:Math.max(420,d.y.length*22+70),
+    margin:{t:16,r:90,b:60,l:140},
+    xaxis:{...LAYOUT_BASE.xaxis,type:'category',nticks:12,tickangle:-35,tickfont:{size:9}},
+    yaxis:{...LAYOUT_BASE.yaxis,tickfont:{size:9.5},autorange:'reversed'},
+  },CONFIG);
+}
+
+// ── GRÁFICO 4 — EQRV PERCENTILE ──────────────────────────────────────────────
+function onEqrvSort(mode) {
+  eqrvSortMode = mode;
+  ['sec','z','pct'].forEach(m =>
+    document.getElementById('btn-sort-'+m).classList.toggle('active', m==={sector:'sec',z:'z',pct:'pct'}[mode]));
+  renderEqrv();
+}
+
+function renderEqrv() {
+  if (!EQRV_DATA||!EQRV_DATA.length) return;
+
+  // Sort
+  let data = [...EQRV_DATA];
+  const SECTOR_ORDER = ['Financials','Consumer','Construction Materials',
+                        'Industrials','Health Care','Media','Mining','Utilities','Other'];
+  if (eqrvSortMode==='z') {
+    data.sort((a,b)=>b.current-a.current);
+  } else if (eqrvSortMode==='pct') {
+    data.sort((a,b)=>b.pct_rank-a.pct_rank);
+  } else {
+    data.sort((a,b)=>{
+      const si=SECTOR_ORDER.indexOf(a.sector), sj=SECTOR_ORDER.indexOf(b.sector);
+      if(si!==sj) return (si<0?99:si)-(sj<0?99:sj);
+      return b.current-a.current;
+    });
+  }
+
+  const aliases  = data.map(d=>d.alias);
+  const n        = aliases.length;
+
+  // ── Band p10–p90 (wide range) ────────────────────────────────────────────
+  const traceBand = {
+    type:'bar', orientation:'h',
+    x: data.map(d=>d.p90-d.p10),
+    y: aliases,
+    base: data.map(d=>d.p10),
+    marker:{color:'rgba(0,174,199,0.12)', line:{width:0}},
+    width:0.55, hoverinfo:'skip', showlegend:true, name:'Rango P10–P90',
+  };
+
+  // ── Box p25–p75 (IQR) ────────────────────────────────────────────────────
+  const traceIQR = {
+    type:'bar', orientation:'h',
+    x: data.map(d=>d.p75-d.p25),
+    y: aliases,
+    base: data.map(d=>d.p25),
+    marker:{color:'rgba(0,51,160,0.45)', line:{width:0}},
+    width:0.45, hoverinfo:'skip', showlegend:true, name:'Rango P25–P75',
+  };
+
+  // ── Mediana (scatter line segments) ─────────────────────────────────────
+  // Plotly scatter-h for median ticks
+  const traceMedian = {
+    type:'scatter', mode:'markers',
+    x: data.map(d=>d.p50),
+    y: aliases,
+    marker:{symbol:'line-ns', size:16, color:C.teal||'#00AEC7',
+            line:{color:'#00AEC7',width:2}},
+    hovertemplate:'<b>%{y}</b><br>Mediana: %{x:.3f}<extra></extra>',
+    showlegend:true, name:'Mediana',
+  };
+
+  // ── Valor actual (diamante) ──────────────────────────────────────────────
+  const dotColors = data.map(d=>
+    d.current>1.5?C.red : d.current<-1.5?C.green :
+    d.current>0.5?C.yellow : d.current<-0.5?'#4fc3d7' : C.muted
+  );
+  const traceCurrent = {
+    type:'scatter', mode:'markers+text',
+    x: data.map(d=>d.current),
+    y: aliases,
+    text: data.map(d=>`${d.current>0?'+':''}${d.current.toFixed(2)}`),
+    textposition: data.map(d=>d.current>=0?'middle right':'middle left'),
+    textfont:{size:9.5, color:dotColors},
+    marker:{symbol:'diamond', size:10, color:dotColors,
+            line:{color:'#0d1a2e',width:1.2}},
+    hovertemplate:'<b>%{y}</b><br>Z actual: %{x:.3f}<br>' +
+      'P-rank: ' + data.map(d=>d.pct_rank.toFixed(0)+'%').join('|') +
+      '<extra></extra>',
+    showlegend:true, name:'Z actual',
+  };
+
+  // Sector separator lines via shapes
+  const shapes = [];
+  let prevSector = null;
+  data.forEach((d,i)=>{
+    if(d.sector!==prevSector && i>0){
+      shapes.push({type:'line',x0:-5,x1:6,
+        y0:i-0.5,y1:i-0.5,
+        xref:'x',yref:'y',
+        line:{color:C.border,width:.8,dash:'solid'}});
+    }
+    // Ref lines ±1.5
+    prevSector=d.sector;
+  });
+  shapes.push(
+    {type:'line',x0:0,x1:0,y0:-0.5,y1:n-0.5,xref:'x',yref:'y',line:{color:C.muted,width:.9}},
+    {type:'line',x0:1.5,x1:1.5,y0:-0.5,y1:n-0.5,xref:'x',yref:'y',line:{color:C.red,width:.7,dash:'dot'}},
+    {type:'line',x0:-1.5,x1:-1.5,y0:-0.5,y1:n-0.5,xref:'x',yref:'y',line:{color:C.green,width:.7,dash:'dot'}},
+  );
+
+  // Sector labels as annotations
+  const secAnnotations = [];
+  let secStart = 0;
+  for(let i=0;i<=n;i++){
+    const done = i===n || data[i].sector!==data[secStart].sector;
+    if(done&&i>0){
+      const midY = (secStart+(i-1))/2;
+      secAnnotations.push({
+        x:6.2, y:midY, xref:'x', yref:'y',
+        text:data[secStart].sector.replace(' Materials','<br>Materials'),
+        showarrow:false, xanchor:'left',
+        font:{size:8.5, color:data[secStart].color||C.muted},
+        align:'left',
+      });
+      if(i<n) secStart=i;
+    }
+  }
+
+  const height = Math.max(380, n*26+80);
+
+  Plotly.react('plot-eqrv',
+    [traceBand, traceIQR, traceMedian, traceCurrent],
+    {
+      ...LAYOUT_BASE,
+      height,
+      barmode:'overlay',
+      showlegend:true,
+      legend:{
+        bgcolor:C.surface, bordercolor:C.border, borderwidth:1,
+        font:{size:10}, orientation:'h', x:0, y:1.04, xanchor:'left',
+      },
+      xaxis:{
+        ...LAYOUT_BASE.xaxis,
+        title:{text:'Z-Score', font:{size:10}},
+        range:[-3.5,7],
+        zeroline:false,
+        tickvals:[-3,-2,-1,0,1,2,3,4,5],
+        ticktext:['−3','−2','−1','0','+1','+2','+3','+4','+5'],
+      },
+      yaxis:{
+        ...LAYOUT_BASE.yaxis,
+        autorange:'reversed',
+        tickfont:{size:10},
+        ticklen:3,
+      },
+      shapes,
+      annotations: [
+        ...secAnnotations,
+        {x:1.5,y:-0.8,xref:'x',yref:'y',text:'+1.5σ',showarrow:false,
+         font:{size:8,color:C.red},yanchor:'top'},
+        {x:-1.5,y:-0.8,xref:'x',yref:'y',text:'−1.5σ',showarrow:false,
+         font:{size:8,color:C.green},yanchor:'top'},
+      ],
+      margin:{t:50,r:90,b:50,l:75},
+    },
+    CONFIG
+  );
+}
+</script>
+</body>
+</html>
+"""
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRÁFICO 4 — EQRV PERCENTILE CHART (Bloomberg/JPM style)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_eqrv_data(bd, param, gics):
+    """
+    Para cada empresa del portafolio calcula la distribución histórica del Z-score:
+    p10, p25, p50, p75, p90 y el valor actual.
+    Agrupa por sector para mantener el ordenamiento visual.
+    Inspirado en el EQRV de Bloomberg y el gráfico de percentiles de J.P. Morgan AM.
+    Ref: JPM Asset Management — Guide to the Markets (Q1 2026).
+    """
+    results = []
+    for _, r in param.iterrows():
+        alias  = r["alias"]
+        z_col  = r["z_col"]
+        bbg    = r["bbg_ticker"]
+        if z_col not in bd.columns or z_col.startswith("nan"):
+            continue
+        if "Index" in z_col:
+            continue
+
+        serie = bd[z_col].dropna()
+        if len(serie) < 52:
+            continue
+
+        sector = gics.loc[bbg, "GICS"] if bbg in gics.index else "Other"
+        nombre = gics.loc[bbg, "Empresa"] if bbg in gics.index else alias
+        current = float(serie.iloc[-1])
+        pct_rank = float((serie < current).mean() * 100)
+
+        results.append(dict(
+            alias=alias,
+            empresa=nombre,
+            sector=sector,
+            color=SECTOR_COLOR.get(sector, C["muted"]),
+            current=round(current, 3),
+            p10=round(float(serie.quantile(0.10)), 3),
+            p25=round(float(serie.quantile(0.25)), 3),
+            p50=round(float(serie.quantile(0.50)), 3),
+            p75=round(float(serie.quantile(0.75)), 3),
+            p90=round(float(serie.quantile(0.90)), 3),
+            pct_rank=round(pct_rank, 1),
+            n_obs=int(len(serie)),
+        ))
+
+    # Sort: by sector then by current Z descending
+    sector_order = ["Financials", "Consumer", "Construction Materials",
+                    "Industrials", "Health Care", "Media",
+                    "Mining", "Utilities", "Other"]
+    results.sort(key=lambda x: (
+        sector_order.index(x["sector"]) if x["sector"] in sector_order else 99,
+        -x["current"]
+    ))
+    return results
+
+def generar_html(bd, param, gics, posiciones, fecha_gen):
+    # Cargar logo AFP Integra en base64 (si existe en la ruta configurada)
+    logo_b64 = ""
+    try:
+        if os.path.exists(RUTA_LOGO):
+            with open(RUTA_LOGO, "rb") as _f:
+                logo_b64 = "data:image/png;base64," + base64.b64encode(_f.read()).decode()
+    except Exception:
+        pass
+
+    print("  → Construyendo gráfico 1: histórico…")
+    hist_traces, interp = build_historico(bd, param, gics)
+
+    print("  → Construyendo gráfico 2: bubble chart…")
+    bubble_data = build_bubble_data(bd, param, gics, posiciones)
+
+    print("  → Construyendo gráfico 3: heatmap…")
+    heat_data = build_heatmap_data(bd, param, gics)
+
+    print("  → Construyendo gráfico 4: EQRV percentiles…")
+    eqrv_data = build_eqrv_data(bd, param, gics)
+
+    # Última fecha con dato en BD
+    z_emp_cols = [
+        c for c in bd.columns
+        if c.startswith("Z_") and "Basket" not in c and "BVL" not in c
+        and "MXLA" not in c and "Index" not in c
+    ]
+    last_valid = bd.loc[bd[z_emp_cols].notna().any(axis=1), "Fecha"].max()
+    last_date_str = last_valid.strftime("%Y-%m-%d") if pd.notna(last_valid) else ""
+
+    html = HTML_TEMPLATE
+    html = html.replace("__HIST_DATA__",   json.dumps(hist_traces,  ensure_ascii=False))
+    html = html.replace("__INTERP_DATA__", json.dumps(interp,       ensure_ascii=False))
+    html = html.replace("__BUBBLE_DATA__", json.dumps(bubble_data,  ensure_ascii=False))
+    html = html.replace("__HEAT_DATA__",   json.dumps(heat_data,    ensure_ascii=False))
+    html = html.replace("__EQRV_DATA__",   json.dumps(eqrv_data,   ensure_ascii=False))
+    html = html.replace("__LOGO_B64__",    logo_b64)
+    html = html.replace("__LAST_DATE__",   last_date_str)
+    html = html.replace("__GEN_DATE__",    fecha_gen)
+
+    return html
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main():
+    inicio = datetime.datetime.now()
+    fecha_gen = inicio.strftime("%d/%m/%Y %H:%M")
+    fecha_tag = inicio.strftime("%d.%m.%y")
+
+    print("=" * 60)
+    print("  ZODA Dashboard — Generador HTML")
+    print(f"  {fecha_gen}")
+    print("=" * 60)
+
+    print("\n[1/5] Leyendo BD…")
+    bd = cargar_bd()
+    print(f"  → {len(bd)} filas | {bd['Fecha'].min().date()} → {bd['Fecha'].max().date()}")
+
+    print("\n[2/5] Leyendo Parametría…")
+    param = cargar_parametria()
+    print(f"  → {len(param)} activos mapeados")
+
+    print("\n[3/5] Leyendo GICS…")
+    gics = cargar_gics()
+
+    print("\n[4/5] Leyendo posiciones DQ_IN…")
+    posiciones = cargar_posiciones()
+    if not posiciones.empty:
+        print(f"  → Posiciones disponibles hasta {posiciones.index.max().date()}")
+    else:
+        print("  ⚠ DQ_IN sin datos de posición")
+
+    print("\n[5/5] Generando HTML…")
+    html = generar_html(bd, param, gics, posiciones, fecha_gen)
+
+    nombre_archivo = f"ZODA_Dashboard_{fecha_tag}.html"
+    ruta_html = os.path.join(RUTA_SALIDA, nombre_archivo)
+
+    with open(ruta_html, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    tam_mb = os.path.getsize(ruta_html) / 1_048_576
+    fin = datetime.datetime.now()
+
+    print(f"\n  ✓ Guardado: {ruta_html}")
+    print(f"  ✓ Tamaño: {tam_mb:.1f} MB")
+    print(f"  ✓ Tiempo: {fin - inicio}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
