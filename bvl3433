@@ -1,0 +1,1124 @@
+"""
+================================================================================
+  RENDIMIENTOS RVL - AFP INTEGRA
+  Versión 2026 | Compatible con Spyder 6+ / PyCharm 2024+
+  Autor original: FRANCO  |  Refactorizado para longevidad y robustez
+================================================================================
+
+LIBRERÍAS REQUERIDAS (instalar una vez en terminal):
+    pip install pandas numpy matplotlib openpyxl
+
+NOTAS IMPORTANTES:
+  - SIN polars ni xlwings. Toda la lectura de Excel se hace con pd.read_excel
+    usando el engine 'openpyxl' (nativo de pandas, sin dependencias extras).
+  - La escritura al .xlsm se hace con openpyxl directamente, celda a celda,
+    preservando macros y formatos del archivo original.
+  - El PDF "Reducido" fue eliminado de las rutas ya que el archivo se extravió.
+    Se mantiene únicamente la generación del PDF completo (Rendimiento RVL YTD).
+================================================================================
+"""
+
+# ── IMPORTS ───────────────────────────────────────────────────────────────────
+import datetime
+import os
+import warnings
+
+import matplotlib as mpl
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
+import numpy as np
+import pandas as pd
+from openpyxl import load_workbook
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+mpl.rcParams["figure.max_open_warning"] = 0   # evitar warning de demasiadas figuras
+
+# ── RUTAS ─────────────────────────────────────────────────────────────────────
+BASE = r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Docs privados"
+
+QEST              = os.path.join(BASE, r"ZODA\shortcut\Benchmarking\QEST_BD.xlsm")
+MONITOR           = os.path.join(BASE, r"RVL\Rendimiento RVL.xlsm")
+AUM_PATH          = os.path.join(BASE, r"ZODA\shortcut\Valor Cuota\DataValorCuota_IN.xlsm")
+BD_PRECIOS_PATH   = os.path.join(BASE, r"ZODA\shortcut\Benchmarking\BDPrecios_VB_IN.xlsx")
+PDF_COMPLETO      = os.path.join(BASE, r"RVL\PDFs\Rendimiento RVL YTD.pdf")
+# PDF_REDUCIDO fue eliminado (archivo extraviado)
+
+fecha_hoy = datetime.datetime.today().strftime("%d.%m.%y")
+print(f"[INFO] Fecha de ejecución: {fecha_hoy}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 1 – PARAMETRÍA (listas de ISINs, sectores, monedas)
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n[1/8] Cargando parametría...")
+
+Base_Parametria = pd.read_excel(MONITOR, sheet_name="Parametria", header=None)
+
+Lista_Isins   = Base_Parametria.dropna(axis=0).iloc[:, 2].tolist()
+Lista_Nombres = Base_Parametria.dropna(axis=0).iloc[:, 0].tolist()
+Diccionario_Parametria = dict(zip(Lista_Isins, Lista_Nombres))
+
+Sectores_DF = Base_Parametria.iloc[:, 2:4].dropna()
+Sectores_DF.columns = ["ISIN", "Sector"]
+Lista_Sectores = Sectores_DF["Sector"].unique().tolist()
+Agrupados_Sectores = {
+    sector: Sectores_DF[Sectores_DF["Sector"] == sector]["ISIN"].tolist()
+    for sector in Lista_Sectores
+}
+
+Monedas_DF = Base_Parametria.iloc[:, [2, 5]].dropna()
+Monedas_DF.columns = ["ISIN", "Moneda"]
+Lista_Monedas = Monedas_DF["Moneda"].unique().tolist()
+Agrupados_Monedas = {
+    moneda: Monedas_DF[Monedas_DF["Moneda"] == moneda]["ISIN"].tolist()
+    for moneda in Lista_Monedas
+}
+
+ListaIN    = ["Fondo", "Dato", "Fecha", "SBS"] + Lista_Isins
+ListaUsados = ListaIN.copy()
+ListaEx    = ["Fondo", "Fecha", "Fondo_Fecha"] + Lista_Isins
+lista_BDP  = ["Campo", "Fecha"] + Lista_Isins
+
+# Cartera Líquida (tickers conocidos)
+L = [
+    "302012200001", "302008100002", "3220082A1040",
+    "300013200001", "300013200002", "3920836W5029",
+    "3020836W5029", "345445281022", "345217200001",
+]
+
+print(f"   ISINs cargados: {len(Lista_Isins)} | Sectores: {len(Lista_Sectores)}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 2 – FUNCIONES DE ACTUALIZACIÓN DQ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def DQ_IN(df1: pd.DataFrame, DQ_IN_BD: pd.DataFrame,
+          ListaIN: list, ListaUsados: list) -> pd.DataFrame:
+    """
+    Actualiza la base DQ_IN con los nuevos datos de QEST.
+    Busca desde la última fecha disponible en la BD hacia adelante.
+    """
+    df1 = df1.drop(df1.index[list(range(0, 10))])
+    df1 = df1.transpose().rename(columns={10: "Isins"})
+    filtrada = df1[df1["Isins"].isin(ListaIN)].transpose()
+    filtrada.columns = filtrada.iloc[0].tolist()
+    filtrada = filtrada[1:]
+
+    ultima_fecha = DQ_IN_BD["Fecha"][::-1].iloc[0]
+    print(f"   DQ IN – última fecha BD: {ultima_fecha}")
+
+    fechas_qest = filtrada["Fecha"].values.tolist()
+    ubi = fechas_qest.index(ultima_fecha) + 9
+    nuevos = filtrada[ubi:].reset_index(drop=True)
+    nuevos = nuevos.loc[nuevos["Dato"] == "Q"]
+
+    return pd.concat([DQ_IN_BD, nuevos], ignore_index=True)
+
+
+def DQ_SIS(df2: pd.DataFrame, DQ_SIS_BD: pd.DataFrame,
+           ListaEx: list) -> pd.DataFrame:
+    """
+    Actualiza la base DQ_SIS (sistema / competencia) con datos de QEST.
+
+    FIX v2026: La hoja DQ_RV del QEST tiene DOS bloques:
+      - Bloque 1 (filas 0-11):  cantidades por fondo (HA-FONDO1, PF-FONDO1…)
+      - Bloque 2 (filas 12+):   datos de sistema con header en fila 15
+
+    El código original usaba rename({13: 'Isins'}) apuntando a la fila de
+    nombres de empresa, no a los ISINs. Con los archivos actuales la fila
+    de ISINs/Fondo_Fecha está en la posición 15, por lo que se detecta
+    dinámicamente buscando la fila que contiene 'Fondo_Fecha'.
+    """
+    # ── Paso 1: eliminar encabezado del bloque 1 y transponer ────────────────
+    df3 = df2.drop(df2.index[list(range(0, 11))]).transpose()
+
+    # ── Paso 2: detectar dinámicamente qué columna del transpose tiene ISINs ─
+    # Buscamos la columna cuyo valor en alguna posición sea 'Fondo_Fecha'
+    col_isins = None
+    for col in df3.columns:
+        if "Fondo_Fecha" in df3[col].values:
+            col_isins = col
+            break
+    if col_isins is None:
+        raise ValueError(
+            "DQ_SIS: No se encontró la columna 'Fondo_Fecha' en DQ_RV del QEST. "
+            "Verificar estructura del archivo."
+        )
+    df3 = df3.rename(columns={col_isins: "Isins"})
+
+    # ── Paso 3: filtrar columnas que coinciden con ListaEx y transponer ───────
+    filtrada_sis = df3[df3["Isins"].isin(ListaEx)].transpose()
+    filtrada_sis = filtrada_sis.reset_index(drop=True).dropna(how="all")
+
+    # ── Paso 4: encontrar dinámicamente la fila de header (Fondo_Fecha) ──────
+    header_row = None
+    for i in range(min(10, len(filtrada_sis))):
+        if "Fondo_Fecha" in filtrada_sis.iloc[i].tolist():
+            header_row = i
+            break
+    if header_row is None:
+        raise ValueError(
+            "DQ_SIS: No se encontró la fila de encabezado (Fondo_Fecha) "
+            "en los datos filtrados. Verificar ListaEx e ISINs del QEST."
+        )
+
+    filtrada_sis.columns = filtrada_sis.iloc[header_row].tolist()
+    filtrada_sis = filtrada_sis.iloc[header_row + 1:].copy()
+    if "Fondo" in filtrada_sis.columns:
+        filtrada_sis = filtrada_sis.drop(columns=["Fondo"])
+
+    # ── Paso 5: identificar última fecha en el BD histórico ───────────────────
+    DQ_SIS_BD.columns = DQ_SIS_BD.iloc[0].tolist()
+    BD_H  = DQ_SIS_BD.drop(0)
+    BD_HF = BD_H[2:]
+
+    ultima_fecha = pd.Timestamp(BD_HF["Fecha"][::-1].drop_duplicates().iloc[0])
+    print(f"   DQ SIS – última fecha BD: {ultima_fecha.date()}")
+
+    # ── Paso 6: encontrar posición de corte en el QEST ───────────────────────
+    # Convertir a Timestamp para comparación homogénea
+    fechas_qest_ts = pd.to_datetime(
+        filtrada_sis["Fecha"].values, errors="coerce"
+    )
+
+    if ultima_fecha in fechas_qest_ts:
+        # Caso normal: la última fecha del BD existe en el QEST → tomar desde ahí
+        ubi = list(fechas_qest_ts).index(ultima_fecha)
+    else:
+        # La última fecha del BD es anterior a todos los datos del QEST
+        # → todos los registros del QEST son nuevos → agregar desde el inicio
+        min_fecha_qest = fechas_qest_ts.dropna().min()
+        if ultima_fecha < min_fecha_qest:
+            print(f"   DQ SIS – BD ({ultima_fecha.date()}) anterior al QEST "
+                  f"({min_fecha_qest.date()}): se agregan todos los registros nuevos.")
+            ubi = 0
+        else:
+            # Tomar el primer registro posterior a ultima_fecha
+            mask = fechas_qest_ts > ultima_fecha
+            ubi = int(mask.argmax()) if mask.any() else len(fechas_qest_ts)
+
+    nuevos   = filtrada_sis.iloc[ubi:].reset_index(drop=True).dropna(how="all")
+    BD_Final = BD_H.iloc[:ubi if ubi > 0 else len(BD_H)]   # si ubi=0, tomar BD completo
+    BD_Final = BD_Final.loc[:, ~BD_Final.columns.duplicated()]
+    nuevos   = nuevos.loc[:,   ~nuevos.columns.duplicated()]
+
+    return pd.concat([BD_Final, nuevos], ignore_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 3 – CARGA Y ACTUALIZACIÓN DE DQ
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n[2/8] Actualizando bases DQ_IN y DQ_SIS...")
+
+DQ_IN_BD  = pd.read_excel(MONITOR, sheet_name="DQ_IN",  engine="openpyxl")
+df1_qest  = pd.read_excel(QEST,    sheet_name="DQ_IN",  header=None, engine="openpyxl")
+
+DQ_SIS_BD = pd.read_excel(MONITOR, sheet_name="DQ_SIS", header=None, engine="openpyxl")
+df2_qest  = pd.read_excel(QEST,    sheet_name="DQ_RV",  header=None, engine="openpyxl")
+
+Base_Integra = DQ_IN(df1_qest, DQ_IN_BD, ListaIN, ListaUsados)
+Base_Sistema = DQ_SIS(df2_qest, DQ_SIS_BD, ListaEx).reset_index(drop=True)
+
+Fecha_Corte = pd.to_datetime(Base_Integra.iloc[::-1, 2].reset_index().iloc[0, 1])
+print(f"   Fecha de corte: {Fecha_Corte.date()}")
+
+
+# ── Escritura a Excel (robusto: sin ProtectedViewWindow) ──────────────────────
+
+def escribir_en_excel(ruta: str, datos: dict) -> None:
+    """
+    Escribe DataFrames en hojas de un .xlsm/.xlsx preservando macros y formato.
+    Usa openpyxl puro — sin xlwings, sin win32com, sin COM.
+
+    'datos' es {nombre_hoja: (dataframe, celda_inicio, con_header, con_index)}
+    celda_inicio como "A1" o "A2".
+    """
+    try:
+        wb = load_workbook(ruta, keep_vba=True)   # keep_vba=True preserva las macros del .xlsm
+
+        for nombre_hoja, (df, celda, con_header, con_index) in datos.items():
+            ws = wb[nombre_hoja]
+
+            # Parsear celda inicio (ej: "A2" → col=1, row=2)
+            from openpyxl.utils.cell import coordinate_to_tuple
+            fila_ini, col_ini = coordinate_to_tuple(celda)
+
+            # Preparar datos a escribir (lista de listas)
+            filas = []
+            if con_header:
+                encabezado = ([""] if con_index else []) + list(df.columns)
+                filas.append(encabezado)
+            for idx, row in df.iterrows():
+                fila = ([idx] if con_index else []) + list(row)
+                filas.append(fila)
+
+            # Escribir celda a celda
+            for r_offset, fila in enumerate(filas):
+                for c_offset, valor in enumerate(fila):
+                    # Convertir tipos no serializables
+                    if hasattr(valor, "item"):        # numpy scalar → python nativo
+                        valor = valor.item()
+                    try:
+                        if pd.isna(valor):
+                            valor = None
+                    except (TypeError, ValueError):
+                        pass
+                    ws.cell(row=fila_ini + r_offset,
+                            column=col_ini + c_offset,  # openpyxl usa 'column', no 'col'
+                            value=valor)
+
+        wb.save(ruta)
+        print(f"   ✓ Guardado: {os.path.basename(ruta)}")
+
+    except Exception as e:
+        print(f"   ✗ Error al escribir en Excel: {e}")
+        print("     Continúa ejecución sin guardar este bloque.")
+
+
+print("\n[3/8] Exportando DQ_IN y DQ_SIS al Monitor...")
+escribir_en_excel(
+    MONITOR,
+    {
+        "DQ_IN":  (Base_Integra, "A2", False, False),
+        "DQ_SIS": (Base_Sistema, "A2", False, False),
+    },
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 4 – AUM, TIPO DE CAMBIO, PRECIOS VECTOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n[4/8] Cargando AUM, TC y Precios Vector...")
+
+# ── AUM ───────────────────────────────────────────────────────────────────────
+
+def calculo_Aum(df: pd.DataFrame, fondos: list, afps: list) -> pd.DataFrame:
+    """
+    Calcula AUM y Market Share de cada AFP por fondo.
+
+    FIX v2026: Con pd.read_excel(header=None, usecols="B:V") los índices de
+    columna preservan los números de Excel (1-based), y la estructura del
+    archivo tiene una fila extra de nombres de AFP (HABITAT, INTEGRA…) antes
+    del header real (Fecha, IN-FONDO1…). Se detecta dinámicamente la fila
+    header buscando la que contiene "Fecha" y etiquetas "FONDO".
+    """
+    # Resetear columnas a 0-based para trabajar con iloc de forma predecible
+    df = df.copy()
+    df.columns = range(len(df.columns))
+
+    # Detectar fila header dinámicamente (contiene "Fecha" y "FONDO")
+    header_row = None
+    for i in range(min(20, len(df))):
+        vals = df.iloc[i].tolist()
+        if "Fecha" in vals and any("FONDO" in str(v) for v in vals):
+            header_row = i
+            break
+    if header_row is None:
+        raise ValueError(
+            "calculo_Aum: No se encontró la fila header (Fecha + FONDO) "
+            "en las primeras 20 filas del AUM. Verificar estructura del archivo."
+        )
+
+    # Transponer desde la fila header para filtrar por etiqueta AFP-FONDOn
+    df_temp = df[header_row:].transpose()
+    col_header = header_row  # en el transpose esta columna = fila header original
+
+    lista_df = []
+    for fondo in fondos:
+        for afp in afps:
+            lista_aum = ["Fecha", f"{afp}-FONDO{fondo}"]
+            filtro = df_temp[df_temp[col_header].isin(lista_aum)]
+            filtro_T = filtro.transpose()
+
+            # Asignar columnas desde la fila que tiene el header real (loc, no iloc)
+            filtro_T.columns = filtro_T.loc[col_header].tolist()
+            filtro_T = filtro_T.drop(col_header)
+
+            # Eliminar filas donde Fecha es NaN (filas de agrupadores AFP)
+            filtro_T = filtro_T.dropna(subset=["Fecha"])
+            filtro_T["Fecha"] = pd.to_datetime(filtro_T["Fecha"], errors="coerce")
+            filtro_T = filtro_T.dropna(subset=["Fecha"])
+            filtro_T.set_index("Fecha", inplace=True)
+            filtro_T = filtro_T.set_axis([f"{afp}_F{fondo}"], axis=1)
+            filtro_T = filtro_T["2014-12-30":]
+            filtro_T = filtro_T.replace("ND", 0).fillna(0).astype(np.float64)
+            lista_df.append(filtro_T)
+
+    df_final = pd.concat(lista_df, axis=1)
+
+    # Cálculo del Market Share de cada AFP
+    df_final["Total"] = df_final.sum(axis=1)
+    for afp in afps:
+        df_final[f"{afp}_MF"]    = df_final.filter(like=f"{afp}_F").sum(axis=1)
+        df_final[f"{afp}_Share"] = df_final[f"{afp}_MF"] / df_final["Total"]
+
+    # Cálculo de AUM Ex-Sistema de cada AFP
+    combinaciones = {
+        "EXIN": ["HA", "PF", "RI"],
+        "EXHA": ["IN", "PF", "RI"],
+        "EXPF": ["IN", "HA", "RI"],
+        "EXRI": ["IN", "PF", "HA"],
+    }
+    for fondo in fondos:
+        for nuevo_col, cols in combinaciones.items():
+            df_final[f"{nuevo_col}_F{fondo}"] = df_final[
+                [f"{c}_F{fondo}" for c in cols]
+            ].sum(axis=1)
+
+    # AUM total por AFP (suma de fondos 1+2+3)
+    for afp in afps:
+        df_final[f"Aum_{afp}"] = sum(df_final[f"{afp}_F{f}"] for f in fondos)
+
+    df_final.drop(columns=["Total"], inplace=True)
+    return df_final
+
+
+fondos = ["1", "2", "3"]
+afps   = ["IN", "HA", "PF", "RI"]
+
+df_Aum = pd.read_excel(
+    AUM_PATH,
+    sheet_name="DataHistórica",
+    header=None,
+    usecols="B:V",        # equivalente a use_columns="B:V"
+    nrows=22000,          # equivalente a n_rows=22000
+    engine="openpyxl",
+)
+
+df_AUM_Share = calculo_Aum(df_Aum, fondos, afps)
+ultfechadisp = df_AUM_Share.index[-1]
+print(f"   Última fecha AUM disponible: {ultfechadisp.date()}")
+
+
+# ── Tipo de Cambio ─────────────────────────────────────────────────────────────
+
+df_BDTC = pd.read_excel(
+    BD_PRECIOS_PATH,
+    sheet_name="BDTC",
+    header=None,
+    usecols="A:DB",       # equivalente a use_columns="A:DB"
+    nrows=22000,
+    engine="openpyxl",
+)
+
+lista_tc = ["Campo", "Fecha", "DOL", "GBP", "CAD"]
+df_tc = df_BDTC.drop(df_BDTC.index[:5]).transpose().rename(columns={5: "Moneda"})
+filtrada_tc = df_tc[df_tc["Moneda"].isin(lista_tc)].transpose().reset_index(drop=True)
+filtrada_tc.columns = filtrada_tc.iloc[0]
+filtrada_tc = filtrada_tc.drop(0)
+
+TC = (
+    filtrada_tc[filtrada_tc["Campo"].str.contains("P")]
+    .drop(["Campo"], axis=1)
+    .reset_index(drop=True)
+)
+TC["Fecha"] = pd.to_datetime(TC["Fecha"].astype(str), format="mixed", dayfirst=True, errors="raise")
+
+TC_F = TC.set_index("Fecha").replace("ND", 0).fillna(0).astype(np.float64)
+
+# Convertir AUM a USD
+df_AUM_Share = df_AUM_Share.div(TC_F["DOL"], axis=0).dropna(axis=0, how="all").copy()
+
+
+# ── Precios Vector ─────────────────────────────────────────────────────────────
+
+df_BDat_Act = pd.read_excel(
+    BD_PRECIOS_PATH,
+    sheet_name="BDat_Act",
+    header=None,
+    engine="openpyxl",
+)
+
+df_BDP = df_BDat_Act.drop(df_BDat_Act.index[:13]).transpose().rename(columns={13: "SBS"})
+Filtrado_BDP = df_BDP[df_BDP["SBS"].isin(lista_BDP)].transpose().reset_index(drop=True)
+Filtrado_BDP.columns = Filtrado_BDP.iloc[0]
+Filtrado_BDP = Filtrado_BDP.drop(0)
+Filtrado_BDP["Fecha"] = pd.to_datetime(
+    Filtrado_BDP["Fecha"].astype(str), format="mixed", dayfirst=True, errors="raise"
+)
+
+Precios_VP = (
+    Filtrado_BDP[Filtrado_BDP["Campo"].str.contains("P")]
+    .drop(["Campo"], axis=1)
+    .reset_index(drop=True)
+    .set_index("Fecha")
+    .replace("ND", 0)
+    .fillna(0)
+    .astype(np.float64)
+)
+
+Retornos_VP = (
+    Filtrado_BDP[
+        Filtrado_BDP["Campo"].str.contains("Ret", case=False)
+        & ~Filtrado_BDP["Campo"].str.contains("Ret1", case=False)
+    ]
+    .drop(["Campo"], axis=1)
+    .reset_index(drop=True)
+    .set_index("Fecha")
+    .replace("ND", 0)
+    .fillna(0)
+    .astype(np.float64)
+)
+
+# Convertir precios a PEN
+for moneda, isins in Agrupados_Monedas.items():
+    if moneda not in ("NSOL", "None"):
+        Precios_VP[isins] = Precios_VP[isins].mul(TC_F[moneda], axis=0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 5 – PRECIOS BLOOMBERG (RVL) + EPU / ETFPERU
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n[5/8] Procesando precios Bloomberg y benchmarks...")
+
+
+def _limpiar_precios(df_raw: pd.DataFrame, tipo_campo: str,
+                     fechas: pd.Series, fecha_corte=None) -> pd.DataFrame:
+    """
+    Extrae y limpia columnas de precio según el campo Bloomberg.
+    Usa iloc puro para ser compatible con pd.read_excel(header=None),
+    donde las columnas son enteros 0,1,2,... y el índice de fila también.
+    Estructura esperada de df_raw (hoja RVL):
+      fila 0: metadatos
+      fila 1: metadatos
+      fila 2: tipo de campo (ej: "TOT_RETURN_INDEX_GROSS_DVDS" o "Px_last")
+      fila 3: ISINs / nombres de columna
+      fila 4: metadatos
+      fila 5+: datos de precios; columna 0 = metadata, columna 2 = fechas
+    """
+    # Seleccionar columnas cuyo campo en fila 2 coincide con tipo_campo
+    mascara = df_raw.iloc[2, :] == tipo_campo
+    sub = df_raw.loc[:, mascara].copy()
+
+    # Extraer nombres de columna desde fila 3 (ISINs), omitir primera col si aplica
+    cols = df_raw.iloc[3, mascara].tolist()
+
+    # Datos desde fila 5
+    sub = df_raw.iloc[5:, mascara].copy()
+    sub.columns = cols
+    sub = sub.loc[:, ~pd.Index(cols).isna()]
+    sub = sub.loc[:, ~sub.columns.duplicated()]
+
+    sub.insert(0, "Fecha", fechas.values)
+    sub.set_index("Fecha", inplace=True)
+    sub.replace(["#N/A N/A", "NM", "(Invalid Formula Name)", "NA"], np.nan, inplace=True)
+    sub.bfill(inplace=True)
+    sub = sub.fillna(0)
+    for col in sub.select_dtypes(include="object").columns:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0).astype("float64")
+    if fecha_corte is not None:
+        sub = sub.loc[:fecha_corte].copy()
+    return sub
+
+
+Precios_rvl = pd.read_excel(
+    MONITOR,
+    sheet_name="RVL",
+    header=None,
+    nrows=4600,
+    engine="openpyxl",
+)
+
+# pd.read_excel con header=None nombra las columnas 0,1,2,...
+# El código original usaba "column_2" (nombre polars). Normalizamos al índice entero.
+Fechas_Diarias = pd.to_datetime(
+    Precios_rvl.iloc[5:, 2], format="%Y-%m-%d %H:%M:%S", errors="coerce"
+).dropna()
+
+Precios_Con_Dividendos_R = _limpiar_precios(
+    Precios_rvl, "TOT_RETURN_INDEX_GROSS_DVDS", Fechas_Diarias, Fecha_Corte
+)
+Precios_Sin_Dividendos_R = _limpiar_precios(
+    Precios_rvl, "Px_last", Fechas_Diarias
+)
+
+Dividendos = Precios_Con_Dividendos_R - Precios_Sin_Dividendos_R
+
+# Retornos diarios de precios con dividendos
+Precios_Con_Dividendos_Var = Precios_Con_Dividendos_R.copy()
+for col in Precios_Con_Dividendos_R.columns:
+    Precios_Con_Dividendos_Var[col] = Precios_Con_Dividendos_R[col].pct_change()
+Precios_Con_Dividendos_Var.fillna(0, inplace=True)
+
+# EPU y ETFPERU
+EPU_Var         = Retornos_VP["5460042E8427"].dropna()
+EPU_Var_Acum    = (1 + EPU_Var).cumprod() * 100
+ETFPERU_Var     = Retornos_VP["5076822E0800"].dropna()
+ETFPERU_Var_Acum = (1 + ETFPERU_Var).cumprod() * 100
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 6 – CANTIDADES (Q) POR AFP × FONDO
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n[6/8] Construyendo matrices de cantidades y pesos...")
+
+
+def _extraer_fondo_integra(base: pd.DataFrame, fondo_tag: str) -> pd.DataFrame:
+    sub = base[base["Fondo"].str.contains(fondo_tag)].drop(["Dato", "SBS"], axis=1)
+    sub = sub.reindex(columns=["Fecha"] + Lista_Isins).fillna(0)
+    sub["Fecha"] = pd.to_datetime(sub["Fecha"])
+    sub.set_index("Fecha", inplace=True)
+    return sub.astype(np.float64)
+
+
+def _extraer_fondo_sistema(base: pd.DataFrame, fondo_tag: str) -> pd.DataFrame:
+    sub = base[base["AFP-Fondo"].str.contains(fondo_tag)].drop(["AFP-Fondo"], axis=1)
+    return sub.reindex(columns=Lista_Isins).fillna(0)
+
+
+# ── Integra ───────────────────────────────────────────────────────────────────
+DQ_IN_F1_O = _extraer_fondo_integra(Base_Integra, "IN-FONDO1")
+DQ_IN_F2_O = _extraer_fondo_integra(Base_Integra, "IN-FONDO2")
+DQ_IN_F3_O = _extraer_fondo_integra(Base_Integra, "IN-FONDO3")
+DQ_IN_M_O  = DQ_IN_F1_O + DQ_IN_F2_O + DQ_IN_F3_O
+
+# ── Sistema (preparar base) ───────────────────────────────────────────────────
+Base_Sistema_ = Base_Sistema.copy()
+Base_Sistema_[["AFP-Fondo", "Fecha_Dia"]] = Base_Sistema_["Fondo_Fecha"].str.split(
+    "[_]", expand=True
+)
+Base_Sistema_.drop(columns=["Fecha", "Fondo_Fecha"], inplace=True)
+Base_Sistema_["Fecha_Dia"] = pd.to_datetime(Base_Sistema_["Fecha_Dia"], dayfirst=True)
+Base_Sistema_.set_index("Fecha_Dia", inplace=True)
+Base_Sistema_F = Base_Sistema_[2:].fillna(0)
+
+# Conversión numérica masiva para todas las columnas objeto
+for col in Base_Sistema_F.select_dtypes(include="object").columns:
+    Base_Sistema_F[col] = pd.to_numeric(Base_Sistema_F[col], errors="coerce").fillna(0).astype("float64")
+
+# ── Habitat, Profuturo, Prima ──────────────────────────────────────────────────
+DQ_HA_F1_O = _extraer_fondo_sistema(Base_Sistema_F, "HA-FONDO1")
+DQ_HA_F2_O = _extraer_fondo_sistema(Base_Sistema_F, "HA-FONDO2")
+DQ_HA_F3_O = _extraer_fondo_sistema(Base_Sistema_F, "HA-FONDO3")
+DQ_HA_M_O  = DQ_HA_F1_O + DQ_HA_F2_O + DQ_HA_F3_O
+
+DQ_PF_F1_O = _extraer_fondo_sistema(Base_Sistema_F, "PF-FONDO1")
+DQ_PF_F2_O = _extraer_fondo_sistema(Base_Sistema_F, "PF-FONDO2")
+DQ_PF_F3_O = _extraer_fondo_sistema(Base_Sistema_F, "PF-FONDO3")
+DQ_PF_M_O  = DQ_PF_F1_O + DQ_PF_F2_O + DQ_PF_F3_O
+
+DQ_RI_F1_O = _extraer_fondo_sistema(Base_Sistema_F, "RI-FONDO1")
+DQ_RI_F2_O = _extraer_fondo_sistema(Base_Sistema_F, "RI-FONDO2")
+DQ_RI_F3_O = _extraer_fondo_sistema(Base_Sistema_F, "RI-FONDO3")
+DQ_RI_M_O  = DQ_RI_F1_O + DQ_RI_F2_O + DQ_RI_F3_O
+
+# Ex-Sistema
+DQ_EXSIS_F1_O = DQ_HA_F1_O + DQ_PF_F1_O + DQ_RI_F1_O
+DQ_EXSIS_F2_O = DQ_HA_F2_O + DQ_PF_F2_O + DQ_RI_F2_O
+DQ_EXSIS_F3_O = DQ_HA_F3_O + DQ_PF_F3_O + DQ_RI_F3_O
+
+# Cartera ilíquida
+IL = [col for col in Precios_VP.columns if col not in L]
+
+
+# ── PxQ ───────────────────────────────────────────────────────────────────────
+
+def _pxq(precios: pd.DataFrame, cantidades: pd.DataFrame) -> pd.DataFrame:
+    result = precios.mul(cantidades, axis=0).dropna(axis=0, how="all")
+    return result[~result.index.duplicated(keep="first")]
+
+
+PxQ = {
+    "IN_F1": _pxq(Precios_VP, DQ_IN_F1_O),
+    "IN_F2": _pxq(Precios_VP, DQ_IN_F2_O),
+    "IN_F3": _pxq(Precios_VP, DQ_IN_F3_O),
+    "IN_M":  _pxq(Precios_VP, DQ_IN_M_O),
+    "HA_F1": _pxq(Precios_VP, DQ_HA_F1_O),
+    "HA_F2": _pxq(Precios_VP, DQ_HA_F2_O),
+    "HA_F3": _pxq(Precios_VP, DQ_HA_F3_O),
+    "HA_M":  _pxq(Precios_VP, DQ_HA_M_O),
+    "PF_F1": _pxq(Precios_VP, DQ_PF_F1_O),
+    "PF_F2": _pxq(Precios_VP, DQ_PF_F2_O),
+    "PF_F3": _pxq(Precios_VP, DQ_PF_F3_O),
+    "PF_M":  _pxq(Precios_VP, DQ_PF_M_O),
+    "RI_F1": _pxq(Precios_VP, DQ_RI_F1_O),
+    "RI_F2": _pxq(Precios_VP, DQ_RI_F2_O),
+    "RI_F3": _pxq(Precios_VP, DQ_RI_F3_O),
+    "RI_M":  _pxq(Precios_VP, DQ_RI_M_O),
+    "EXSIS_F1": _pxq(Precios_VP, DQ_EXSIS_F1_O),
+    "EXSIS_F2": _pxq(Precios_VP, DQ_EXSIS_F2_O),
+    "EXSIS_F3": _pxq(Precios_VP, DQ_EXSIS_F3_O),
+}
+
+# Referencias directas para compatibilidad con código posterior
+PxQ_IN_F1_O = PxQ["IN_F1"]; PxQ_IN_F2_O = PxQ["IN_F2"]
+PxQ_IN_F3_O = PxQ["IN_F3"]; PxQ_IN_M_O  = PxQ["IN_M"]
+
+
+# ── Weights (generales + líquida + ilíquida) ──────────────────────────────────
+
+def _weights(pxq_df: pd.DataFrame, cols=None) -> pd.DataFrame:
+    sub = pxq_df[cols] if cols is not None else pxq_df
+    return sub.div(sub.sum(axis=1), axis=0)
+
+
+def _rezagar(w: pd.DataFrame) -> pd.DataFrame:
+    """Desplaza el índice un período hacia adelante (weight t-1 → ret t)."""
+    w = w.copy()
+    w.index = w.reset_index(names="Fecha")["Fecha"].shift(-1)
+    return w.iloc[:-1]
+
+
+def _build_weights(pxq_map: dict, sufijo: str = "", cols=None) -> dict:
+    out = {}
+    for key, pxq in pxq_map.items():
+        w = _rezagar(_weights(pxq, cols))
+        out[f"{key}{sufijo}"] = w
+    return out
+
+
+# Pesos totales (rezagados)
+Weights = _build_weights(PxQ)
+
+# Pesos cartera Líquida
+PxQ_L = {k: v for k, v in PxQ.items()}
+Weights_L  = _build_weights(PxQ_L,  "_L",  L)
+Weights_IL = _build_weights(PxQ_L,  "_IL", IL)
+
+# Diccionarios estilo original para facilitar iterar
+F1s    = {k.split("_")[0]: Weights[k]    for k in Weights    if k.endswith("_F1")}
+F2s    = {k.split("_")[0]: Weights[k]    for k in Weights    if k.endswith("_F2")}
+F3s    = {k.split("_")[0]: Weights[k]    for k in Weights    if k.endswith("_F3")}
+Ms     = {k.split("_")[0]: Weights[k]    for k in Weights    if k.endswith("_M") and not k.endswith("_IM")}
+
+F1s_L  = {k.split("_")[0]: Weights_L[k]  for k in Weights_L  if "_F1_L" in k}
+F2s_L  = {k.split("_")[0]: Weights_L[k]  for k in Weights_L  if "_F2_L" in k}
+F3s_L  = {k.split("_")[0]: Weights_L[k]  for k in Weights_L  if "_F3_L" in k}
+Ms_L   = {k.split("_")[0]: Weights_L[k]  for k in Weights_L  if k.endswith("_M_L")}
+
+F1s_IL = {k.split("_")[0]: Weights_IL[k] for k in Weights_IL if "_F1_IL" in k}
+F2s_IL = {k.split("_")[0]: Weights_IL[k] for k in Weights_IL if "_F2_IL" in k}
+F3s_IL = {k.split("_")[0]: Weights_IL[k] for k in Weights_IL if "_F3_IL" in k}
+Ms_IL  = {k.split("_")[0]: Weights_IL[k] for k in Weights_IL if k.endswith("_M_IL")}
+
+
+# ── Weights Benchmark (EPU y ETFPERU) ─────────────────────────────────────────
+
+Weights_Benchmark = pd.read_excel(
+    MONITOR,
+    sheet_name="Benchmark",
+    header=None,
+    nrows=4600,
+    engine="openpyxl",
+)
+
+
+def _extraer_benchmark(wb_df: pd.DataFrame, nombre: str,
+                        ref_index: pd.Index) -> pd.DataFrame:
+    cols = wb_df.columns[wb_df.iloc[0].isin(["Benchmark", nombre])]
+    df = wb_df[cols].copy()[4:].reset_index(drop=True)
+    df.columns = df.iloc[0]
+    df = df.drop(0).reset_index(drop=True)
+    df = df.rename(columns={df.columns[0]: "Fecha"})
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    df = df.set_index("Fecha").replace("-", 0).apply(pd.to_numeric, errors="coerce")
+    return df.reindex(ref_index).ffill()
+
+
+EPU_Limpio    = _extraer_benchmark(Weights_Benchmark, "EPU",     PxQ_IN_F1_O.index)
+ETFPERU_Limpio = _extraer_benchmark(Weights_Benchmark, "ETFPERU", PxQ_IN_F1_O.index)
+
+PxQ_EPU    = Precios_Sin_Dividendos_R.mul(EPU_Limpio, axis=0).dropna(axis=0, how="all").dropna(axis=1, how="all")
+PxQ_ETFPERU = Precios_Sin_Dividendos_R.mul(ETFPERU_Limpio, axis=0).dropna(axis=0, how="all").dropna(axis=1, how="all")
+
+weight_EPU    = _rezagar(_weights(PxQ_EPU))
+weight_ETFPERU = _rezagar(_weights(PxQ_ETFPERU))
+weights_etfs  = {"Weight_EPU": weight_EPU, "Weight_ETFPERU": weight_ETFPERU}
+
+
+# ── Weights por sectores ───────────────────────────────────────────────────────
+
+def _sectores_weights(fondos_dict: dict, fondo_tag: str) -> dict:
+    out = {}
+    for afp, w in fondos_dict.items():
+        for sector, isins in Agrupados_Sectores.items():
+            key = f"{afp}_{sector}_{fondo_tag}"
+            sub = w.loc[:, w.columns.intersection(isins)]
+            out[key] = sub.div(sub.sum(axis=1), axis=0)
+    return out
+
+
+Sectores_Weight_F1 = _sectores_weights(F1s, "F1")
+Sectores_Weight_F2 = _sectores_weights(F2s, "F2")
+Sectores_Weight_F3 = _sectores_weights(F3s, "F3")
+Sectores_Weight_M  = _sectores_weights(Ms,  "M")
+Lista_Weights_Sectores_Fondos = [
+    Sectores_Weight_F1, Sectores_Weight_F2, Sectores_Weight_F3, Sectores_Weight_M
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 7 – RETORNOS PONDERADOS Y ACUMULADOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n[7/8] Calculando retornos ponderados y acumulados...")
+
+
+def _ret_pond(retornos: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFrame:
+    return retornos.mul(weights, axis=0).dropna(axis=0, how="all")
+
+
+def _acumular(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["Total"] = df.sum(axis=1)
+    return (1 + df.replace([np.inf, -np.inf], np.nan).fillna(0)).cumprod() * 100
+
+
+# ── Retornos individuales ──────────────────────────────────────────────────────
+Ret_IN_F1_O = _ret_pond(Retornos_VP, F1s.get("IN", pd.DataFrame()))
+Ret_IN_F2_O = _ret_pond(Retornos_VP, F2s.get("IN", pd.DataFrame()))
+Ret_IN_F3_O = _ret_pond(Retornos_VP, F3s.get("IN", pd.DataFrame()))
+Ret_IN_M_O  = _ret_pond(Retornos_VP, Ms.get("IN",  pd.DataFrame()))
+
+Ret_HA_F1_O = _ret_pond(Retornos_VP, F1s.get("HA", pd.DataFrame()))
+Ret_HA_F2_O = _ret_pond(Retornos_VP, F2s.get("HA", pd.DataFrame()))
+Ret_HA_F3_O = _ret_pond(Retornos_VP, F3s.get("HA", pd.DataFrame()))
+Ret_HA_M_O  = _ret_pond(Retornos_VP, Ms.get("HA",  pd.DataFrame()))
+
+Ret_PF_F1_O = _ret_pond(Retornos_VP, F1s.get("PF", pd.DataFrame()))
+Ret_PF_F2_O = _ret_pond(Retornos_VP, F2s.get("PF", pd.DataFrame()))
+Ret_PF_F3_O = _ret_pond(Retornos_VP, F3s.get("PF", pd.DataFrame()))
+Ret_PF_M_O  = _ret_pond(Retornos_VP, Ms.get("PF",  pd.DataFrame()))
+
+Ret_RI_F1_O = _ret_pond(Retornos_VP, F1s.get("RI", pd.DataFrame()))
+Ret_RI_F2_O = _ret_pond(Retornos_VP, F2s.get("RI", pd.DataFrame()))
+Ret_RI_F3_O = _ret_pond(Retornos_VP, F3s.get("RI", pd.DataFrame()))
+Ret_RI_M_O  = _ret_pond(Retornos_VP, Ms.get("RI",  pd.DataFrame()))
+
+Ret_EXSIS_F1_O = _ret_pond(Retornos_VP, F1s.get("EXSIS", pd.DataFrame()))
+Ret_EXSIS_F2_O = _ret_pond(Retornos_VP, F2s.get("EXSIS", pd.DataFrame()))
+Ret_EXSIS_F3_O = _ret_pond(Retornos_VP, F3s.get("EXSIS", pd.DataFrame()))
+
+# Cartera Líquida
+Ret_IN_F1_O_L = _ret_pond(Retornos_VP, F1s_L.get("IN", pd.DataFrame()))
+Ret_IN_F2_O_L = _ret_pond(Retornos_VP, F2s_L.get("IN", pd.DataFrame()))
+Ret_IN_F3_O_L = _ret_pond(Retornos_VP, F3s_L.get("IN", pd.DataFrame()))
+Ret_IN_M_O_L  = _ret_pond(Retornos_VP, Ms_L.get("IN",  pd.DataFrame()))
+
+Ret_HA_F1_O_L = _ret_pond(Retornos_VP, F1s_L.get("HA", pd.DataFrame()))
+Ret_HA_F2_O_L = _ret_pond(Retornos_VP, F2s_L.get("HA", pd.DataFrame()))
+Ret_HA_F3_O_L = _ret_pond(Retornos_VP, F3s_L.get("HA", pd.DataFrame()))
+Ret_HA_M_O_L  = _ret_pond(Retornos_VP, Ms_L.get("HA",  pd.DataFrame()))
+
+Ret_PF_F1_O_L = _ret_pond(Retornos_VP, F1s_L.get("PF", pd.DataFrame()))
+Ret_PF_F2_O_L = _ret_pond(Retornos_VP, F2s_L.get("PF", pd.DataFrame()))
+Ret_PF_F3_O_L = _ret_pond(Retornos_VP, F3s_L.get("PF", pd.DataFrame()))
+Ret_PF_M_O_L  = _ret_pond(Retornos_VP, Ms_L.get("PF",  pd.DataFrame()))
+
+Ret_RI_F1_O_L = _ret_pond(Retornos_VP, F1s_L.get("RI", pd.DataFrame()))
+Ret_RI_F2_O_L = _ret_pond(Retornos_VP, F2s_L.get("RI", pd.DataFrame()))
+Ret_RI_F3_O_L = _ret_pond(Retornos_VP, F3s_L.get("RI", pd.DataFrame()))
+Ret_RI_M_O_L  = _ret_pond(Retornos_VP, Ms_L.get("RI",  pd.DataFrame()))
+
+Ret_EXSIS_F1_O_L = _ret_pond(Retornos_VP, F1s_L.get("EXSIS", pd.DataFrame()))
+Ret_EXSIS_F2_O_L = _ret_pond(Retornos_VP, F2s_L.get("EXSIS", pd.DataFrame()))
+Ret_EXSIS_F3_O_L = _ret_pond(Retornos_VP, F3s_L.get("EXSIS", pd.DataFrame()))
+
+# Cartera Ilíquida
+Ret_IN_F1_O_IL = _ret_pond(Retornos_VP, F1s_IL.get("IN", pd.DataFrame()))
+Ret_IN_F2_O_IL = _ret_pond(Retornos_VP, F2s_IL.get("IN", pd.DataFrame()))
+Ret_IN_F3_O_IL = _ret_pond(Retornos_VP, F3s_IL.get("IN", pd.DataFrame()))
+Ret_IN_M_O_IL  = _ret_pond(Retornos_VP, Ms_IL.get("IN",  pd.DataFrame()))
+
+Ret_HA_F1_O_IL = _ret_pond(Retornos_VP, F1s_IL.get("HA", pd.DataFrame()))
+Ret_HA_F2_O_IL = _ret_pond(Retornos_VP, F2s_IL.get("HA", pd.DataFrame()))
+Ret_HA_F3_O_IL = _ret_pond(Retornos_VP, F3s_IL.get("HA", pd.DataFrame()))
+Ret_HA_M_O_IL  = _ret_pond(Retornos_VP, Ms_IL.get("HA",  pd.DataFrame()))
+
+Ret_PF_F1_O_IL = _ret_pond(Retornos_VP, F1s_IL.get("PF", pd.DataFrame()))
+Ret_PF_F2_O_IL = _ret_pond(Retornos_VP, F2s_IL.get("PF", pd.DataFrame()))
+Ret_PF_F3_O_IL = _ret_pond(Retornos_VP, F3s_IL.get("PF", pd.DataFrame()))
+Ret_PF_M_O_IL  = _ret_pond(Retornos_VP, Ms_IL.get("PF",  pd.DataFrame()))
+
+Ret_RI_F1_O_IL = _ret_pond(Retornos_VP, F1s_IL.get("RI", pd.DataFrame()))
+Ret_RI_F2_O_IL = _ret_pond(Retornos_VP, F2s_IL.get("RI", pd.DataFrame()))
+Ret_RI_F3_O_IL = _ret_pond(Retornos_VP, F3s_IL.get("RI", pd.DataFrame()))
+Ret_RI_M_O_IL  = _ret_pond(Retornos_VP, Ms_IL.get("RI",  pd.DataFrame()))
+
+Ret_EXSIS_F1_O_IL = _ret_pond(Retornos_VP, F1s_IL.get("EXSIS", pd.DataFrame()))
+Ret_EXSIS_F2_O_IL = _ret_pond(Retornos_VP, F2s_IL.get("EXSIS", pd.DataFrame()))
+Ret_EXSIS_F3_O_IL = _ret_pond(Retornos_VP, F3s_IL.get("EXSIS", pd.DataFrame()))
+
+# ETFs
+Ret_EPU_O    = _ret_pond(Precios_Con_Dividendos_Var, weight_EPU).dropna(axis=1, how="all").fillna(0)
+Ret_ETFPERU_O = _ret_pond(Precios_Con_Dividendos_Var, weight_ETFPERU).dropna(axis=1, how="all").fillna(0)
+Ret_ETFs = {"Ret_EPU": Ret_EPU_O, "Ret_ETFPERU": Ret_ETFPERU_O}
+
+# ── Mapa global de retornos ────────────────────────────────────────────────────
+Retornos_Agregados_RVL = {
+    "Ret_IN_F1_O": Ret_IN_F1_O, "Ret_IN_F2_O": Ret_IN_F2_O,
+    "Ret_IN_F3_O": Ret_IN_F3_O, "Ret_IN_M_O":  Ret_IN_M_O,
+    "Ret_HA_F1_O": Ret_HA_F1_O, "Ret_HA_F2_O": Ret_HA_F2_O,
+    "Ret_HA_F3_O": Ret_HA_F3_O, "Ret_HA_M_O":  Ret_HA_M_O,
+    "Ret_PF_F1_O": Ret_PF_F1_O, "Ret_PF_F2_O": Ret_PF_F2_O,
+    "Ret_PF_F3_O": Ret_PF_F3_O, "Ret_PF_M_O":  Ret_PF_M_O,
+    "Ret_RI_F1_O": Ret_RI_F1_O, "Ret_RI_F2_O": Ret_RI_F2_O,
+    "Ret_RI_F3_O": Ret_RI_F3_O, "Ret_RI_M_O":  Ret_RI_M_O,
+    "Ret_EXSIS_F1_O": Ret_EXSIS_F1_O, "Ret_EXSIS_F2_O": Ret_EXSIS_F2_O,
+    "Ret_EXSIS_F3_O": Ret_EXSIS_F3_O,
+    "Ret_IN_F1_O_L":  Ret_IN_F1_O_L,  "Ret_IN_F2_O_L":  Ret_IN_F2_O_L,
+    "Ret_IN_F3_O_L":  Ret_IN_F3_O_L,  "Ret_IN_M_O_L":   Ret_IN_M_O_L,
+    "Ret_HA_F1_O_L":  Ret_HA_F1_O_L,  "Ret_HA_F2_O_L":  Ret_HA_F2_O_L,
+    "Ret_HA_F3_O_L":  Ret_HA_F3_O_L,  "Ret_HA_M_O_L":   Ret_HA_M_O_L,
+    "Ret_PF_F1_O_L":  Ret_PF_F1_O_L,  "Ret_PF_F2_O_L":  Ret_PF_F2_O_L,
+    "Ret_PF_F3_O_L":  Ret_PF_F3_O_L,  "Ret_PF_M_O_L":   Ret_PF_M_O_L,
+    "Ret_RI_F1_O_L":  Ret_RI_F1_O_L,  "Ret_RI_F2_O_L":  Ret_RI_F2_O_L,
+    "Ret_RI_F3_O_L":  Ret_RI_F3_O_L,  "Ret_RI_M_O_L":   Ret_RI_M_O_L,
+    "Ret_EXSIS_F1_O_L": Ret_EXSIS_F1_O_L, "Ret_EXSIS_F2_O_L": Ret_EXSIS_F2_O_L,
+    "Ret_EXSIS_F3_O_L": Ret_EXSIS_F3_O_L,
+    "Ret_IN_F1_O_IL": Ret_IN_F1_O_IL, "Ret_IN_F2_O_IL": Ret_IN_F2_O_IL,
+    "Ret_IN_F3_O_IL": Ret_IN_F3_O_IL, "Ret_IN_M_O_IL":  Ret_IN_M_O_IL,
+    "Ret_HA_F1_O_IL": Ret_HA_F1_O_IL, "Ret_HA_F2_O_IL": Ret_HA_F2_O_IL,
+    "Ret_HA_F3_O_IL": Ret_HA_F3_O_IL, "Ret_HA_M_O_IL":  Ret_HA_M_O_IL,
+    "Ret_PF_F1_O_IL": Ret_PF_F1_O_IL, "Ret_PF_F2_O_IL": Ret_PF_F2_O_IL,
+    "Ret_PF_F3_O_IL": Ret_PF_F3_O_IL, "Ret_PF_M_O_IL":  Ret_PF_M_O_IL,
+    "Ret_RI_F1_O_IL": Ret_RI_F1_O_IL, "Ret_RI_F2_O_IL": Ret_RI_F2_O_IL,
+    "Ret_RI_F3_O_IL": Ret_RI_F3_O_IL, "Ret_RI_M_O_IL":  Ret_RI_M_O_IL,
+    "Ret_EXSIS_F1_O_IL": Ret_EXSIS_F1_O_IL, "Ret_EXSIS_F2_O_IL": Ret_EXSIS_F2_O_IL,
+    "Ret_EXSIS_F3_O_IL": Ret_EXSIS_F3_O_IL,
+}
+
+# ── Acumulados ─────────────────────────────────────────────────────────────────
+Retornos_Agregados_Acum_RVL = {k: _acumular(v) for k, v in Retornos_Agregados_RVL.items()}
+Ret_Acum_ETFs               = {k: _acumular(v) for k, v in Ret_ETFs.items()}
+
+
+def _detectar_sufijo(nombre: str) -> str:
+    low = nombre.lower()
+    if any(t in low for t in ["_il", "_iliq", "ilíquida", "iliquida"]):
+        return "_IL"
+    if any(t in low for t in ["_o_l", "_liq", "liquida", "líquida"]):
+        return "_L"
+    return ""
+
+
+# Totales por fondo (IN, HA, PF, RI por F1/F2/F3/M)
+Nombres_Fondos_ind = ["F1", "F2", "F3", "M"]
+Retornos_Agregados_Acum_RVL_Totales: dict[str, pd.DataFrame] = {f: pd.DataFrame() for f in Nombres_Fondos_ind}
+
+for nombre, df in Retornos_Agregados_Acum_RVL.items():
+    partes = nombre.split("_")
+    if len(partes) < 3:
+        continue
+    afp   = partes[1]          # IN/HA/PF/RI/EXSIS
+    ftag  = partes[2]          # F1/F2/F3/M
+    if ftag not in Nombres_Fondos_ind:
+        continue
+    suf      = _detectar_sufijo(nombre)
+    col_name = f"{afp}{suf}"
+    Retornos_Agregados_Acum_RVL_Totales[ftag] = Retornos_Agregados_Acum_RVL_Totales[ftag].join(
+        df[["Total"]].rename(columns={"Total": col_name}), how="outer"
+    )
+
+
+# ── Retornos por Sector ────────────────────────────────────────────────────────
+
+Retornos_Weighted_Sectores_AFP: dict[str, pd.DataFrame] = {}
+Retornos_Acumulados_Sectorial:  dict[str, pd.DataFrame] = {}
+
+for fondo_dict in Lista_Weights_Sectores_Fondos:
+    for afp_sector, weights in fondo_dict.items():
+        key      = f"Ret_{afp_sector}"
+        ret_raw  = Precios_Con_Dividendos_Var.mul(weights, axis=0).dropna(axis=0, how="all").dropna(axis=1, how="all")
+        ret_raw["Total"] = ret_raw.sum(axis=1)
+        Retornos_Weighted_Sectores_AFP[key]        = ret_raw
+        Retornos_Acumulados_Sectorial[f"Ret_Acum_{afp_sector}"] = _acumular(ret_raw)
+
+# Totales sectoriales por fondo
+Solo_Totales_Retornos_Sectoriales: dict[str, pd.DataFrame] = {}
+for sector in Lista_Sectores:
+    for nombre, acum in Retornos_Acumulados_Sectorial.items():
+        partes = nombre.split("_")
+        if len(partes) < 5:
+            continue
+        fondo_tag = partes[4]
+        afp_tag   = partes[2]
+        sec_tag   = partes[3]
+        key       = f"{sector}_{fondo_tag}"
+        Solo_Totales_Retornos_Sectoriales.setdefault(key, pd.DataFrame())
+        if sec_tag == sector:
+            col_total = pd.DataFrame({afp_tag: acum["Total"]})
+            Solo_Totales_Retornos_Sectoriales[key] = pd.concat(
+                [Solo_Totales_Retornos_Sectoriales[key], col_total], axis=1
+            )
+
+
+# ── Exportar todo a Excel (hoja BD) ───────────────────────────────────────────
+
+print("   Preparando DataFrame final para exportar a Excel...")
+df_exportar = []
+
+for i, df in Retornos_Agregados_RVL.items():
+    ren = df.copy()
+    ren.columns = [f"{i}_{col}" for col in ren.columns]
+    df_exportar.append(ren)
+
+ren_precios = Precios_Con_Dividendos_Var.copy()
+ren_precios.columns = [f"Retorno_Precios_No_Acum_{c}" for c in ren_precios.columns]
+df_exportar.append(ren_precios)
+
+Totales_AUM_RVL = {k: PxQ[k] for k in PxQ}
+PD_Final = pd.DataFrame({f"AUM_RVL_{k}": v.sum(axis=1) for k, v in Totales_AUM_RVL.items()})
+df_exportar.append(PD_Final)
+
+Matriz_Weights = {**{f"weight_{k}_": Weights[k] for k in Weights},
+                  **{f"weight_{k}_L_": Weights_L[k] for k in Weights_L},
+                  **{f"weight_{k}_IL_": Weights_IL[k] for k in Weights_IL}}
+
+for i, df in Matriz_Weights.items():
+    ren = df.iloc[:-1].copy()
+    ren.columns = [f"{i}{col}" for col in ren.columns]
+    df_exportar.append(ren)
+
+for i, df in {**Ret_ETFs, **weights_etfs}.items():
+    ren = df.copy()
+    ren.columns = [f"{i}_{col}" for col in ren.columns]
+    df_exportar.append(ren)
+
+ren_retVP = Retornos_VP.copy()
+ren_retVP.columns = [f"Retorno_VP_{c}" for c in ren_retVP.columns]
+df_exportar.append(ren_retVP)
+
+df_final = pd.concat(df_exportar, axis=1)
+
+escribir_en_excel(
+    MONITOR,
+    {"BD": (df_final, "A1", True, True)},
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECCIÓN 8 – GENERACIÓN DE PDF COMPLETO
+# ══════════════════════════════════════════════════════════════════════════════
+
+print(f"\n[8/8] Generando PDF: {os.path.basename(PDF_COMPLETO)}...")
+
+colors      = ["#3e63ad", "#00B0F0", "#FF0000", "#FFA500"]
+labels_afp  = ["Integra", "Habitat", "Profuturo", "Prima"]
+afps_claves = ["IN", "HA", "PF", "RI"]
+FONT        = "Trebuchet MS"
+TAMFONT     = 10
+
+
+def _formato_eje(ax, rotacion: int = 90, fmt: str = "%d-%b-%y"):
+    ax.tick_params(axis="x", rotation=rotacion, labelsize=TAMFONT)
+    ax.tick_params(axis="y", labelsize=TAMFONT)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
+
+
+def _titulo_ax(ax, titulo: str, fontsize: int = 12):
+    ax.set_title(titulo)
+    ax.title.set_fontsize(fontsize)
+    ax.title.set_fontname(FONT)
+
+
+def _plot_portafolio_fondo(ax, df_fondo: pd.DataFrame, titulo: str, solo_integra: bool = False):
+    ax.plot(EPU_Var_Acum,     color="grey",    label="EPU")
+    ax.plot(ETFPERU_Var_Acum, color="green",   label="ETF Peru")
+    for i, (afp, color, lbl) in enumerate(zip(afps_claves, colors, labels_afp)):
+        if solo_integra and afp != "IN":
+            continue
+        if afp in df_fondo.columns:
+            ax.plot(df_fondo[afp], color=color, label=lbl)
+    _titulo_ax(ax, titulo)
+    ax.legend(fontsize=8)
+    _formato_eje(ax)
+
+
+def Sectores_graph(
+    Solo_Totales_Retornos_Sectoriales: dict,
+    Precios_Con_Dividendos_R: pd.DataFrame,
+    pdf_path: str,
+    solo_integra: bool = False,
+):
+    """
+    Genera el PDF de rendimientos RVL.
+    solo_integra=True → solo pinta la línea de Integra (versión 'reducida').
+    """
+    with PdfPages(pdf_path) as pdf:
+
+        # ── Portafolio total ──────────────────────────────────────────────────
+        fig, axes = plt.subplots(2, 2, figsize=(22, 17))
+        fig.suptitle("Rendimientos Acumulados – Portafolio RVL",
+                     fontsize=20, fontweight="bold", color="#000000")
+        plt.tight_layout(pad=5)
+        plt.subplots_adjust(top=0.95)
+
+        fondo_ax_map = {"F1": axes[0, 0], "F2": axes[0, 1], "F3": axes[1, 0], "M": axes[1, 1]}
+        fondo_titulo = {"F1": "Fondo 1", "F2": "Fondo 2", "F3": "Fondo 3", "M": "Multifondo"}
+
+        for fondo, ax in fondo_ax_map.items():
+            df_fondo = Retornos_Agregados_Acum_RVL_Totales.get(fondo, pd.DataFrame())
+            _plot_portafolio_fondo(ax, df_fondo, fondo_titulo[fondo], solo_integra)
+
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # ── Por sectores ──────────────────────────────────────────────────────
+        for sector in Lista_Sectores:
+            fig, axes = plt.subplots(2, 2, figsize=(22, 17))
+            titulo_sec = "Rendimiento: " if solo_integra else "Rendimiento Acumulado: "
+            fig.suptitle(f"{titulo_sec}{sector}",
+                         fontsize=20, fontweight="bold", color="#000000")
+            plt.tight_layout(pad=5)
+            plt.subplots_adjust(top=0.95)
+
+            for fondo, ax in fondo_ax_map.items():
+                key = f"{sector}_{fondo}"
+                df_sec = Solo_Totales_Retornos_Sectoriales.get(key, pd.DataFrame())
+                _plot_portafolio_fondo(ax, df_sec, fondo_titulo[fondo], solo_integra)
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # ── Precios (8 por página) ────────────────────────────────────────────
+        cols_validas = [c for c in Precios_Con_Dividendos_R.columns if c in Diccionario_Parametria]
+        paginas      = len(cols_validas) // 8
+        contador     = 0
+
+        for _ in range(paginas + 1):
+            fig, axes = plt.subplots(4, 2, figsize=(22, 17))
+            fig.suptitle("Precios", fontsize=20, fontweight="bold", color="#000000")
+            plt.tight_layout(pad=5)
+            plt.subplots_adjust(top=0.95)
+
+            for y in range(4):
+                for x in range(2):
+                    if contador == len(cols_validas):
+                        axes[y, x].axis("off")
+                        continue
+                    col = cols_validas[contador]
+                    axes[y, x].plot(Precios_Con_Dividendos_R[col], color="#3e63ad")
+                    _titulo_ax(axes[y, x], Diccionario_Parametria[col])
+                    axes[y, x].tick_params(axis="x", rotation=90, labelsize=12)
+                    axes[y, x].tick_params(axis="y", labelsize=12)
+                    axes[y, x].xaxis.set_major_formatter(mdates.DateFormatter("%b-%y"))
+                    contador += 1
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"   ✓ PDF generado: {pdf_path}")
+
+
+# ── Ejecutar generación del PDF completo ──────────────────────────────────────
+Sectores_graph(
+    Solo_Totales_Retornos_Sectoriales,
+    Precios_Con_Dividendos_R,
+    PDF_COMPLETO,
+    solo_integra=False,
+)
+
+# Nota: el PDF Reducido fue eliminado porque el archivo se extravió.
+# Si en el futuro se recupera la ruta, simplemente llamar:
+#   Sectores_graph(..., pdf_path=PDF_REDUCIDO, solo_integra=True)
+
+print("\n✅ Proceso completado exitosamente.")
