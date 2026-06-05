@@ -1,5 +1,1340 @@
-import subprocess
-r = subprocess.run(["pip", "show", "pywin32"], capture_output=True, text=True)
-print(r.stdout or "NO instalado")
-import os
-print(os.getcwd())
+#!/usr/bin/env python3
+"""
+AFP Integra — Inversión Temática Dashboard
+Dash/Plotly app. Lanzar con:  python app.py
+Se abre automáticamente en http://127.0.0.1:8050
+"""
+
+# ══════════════════════════════════════════════════════════════════════
+#  INSTALACIÓN AUTOMÁTICA DE DEPENDENCIAS
+# ══════════════════════════════════════════════════════════════════════
+import subprocess, sys
+
+def pip_install(*pkgs):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *pkgs, "-q"])
+
+try:
+    import dash
+except ImportError:
+    print("Instalando dash..."); pip_install("dash")
+
+try:
+    import dash_ag_grid
+except ImportError:
+    print("Instalando dash-ag-grid..."); pip_install("dash-ag-grid")
+
+try:
+    import openpyxl
+except ImportError:
+    print("Instalando openpyxl..."); pip_install("openpyxl")
+
+# ══════════════════════════════════════════════════════════════════════
+#  IMPORTS
+# ══════════════════════════════════════════════════════════════════════
+import os, re, glob, json, webbrowser, threading
+from datetime import date, timedelta
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+import dash
+from dash import dcc, html, dash_table, Input, Output, State, ctx, ALL, MATCH, no_update
+import dash_ag_grid as dag
+import plotly.express as px
+import plotly.graph_objects as go
+
+# ══════════════════════════════════════════════════════════════════════
+#  CONFIGURACIÓN — AJUSTA ESTAS RUTAS
+# ══════════════════════════════════════════════════════════════════════
+INVERSION_DIR = r"Z:\Mesa de Inversiones\Bottom-Up\2 Proceso de Inversión Renta Fija\Corporates - Emisiones\Crédito - BU\3. ESG\56. Nuevo Modelo Comité ASG\Excel Inversion Tematica"
+BENCHMARKING_FILE = r"Z:\Benchmarking\G&P_MLab.xlsm"
+SHEET_VALORIZACION  = "Valorización de Instrumentos"
+SHEET_DETALLADO     = "Detallado"
+
+# Columnas Detallado (0-indexed): D,E,F,G,H,I,J,K,M,S,V
+DETALLADO_COLS_IDX = [3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 21]
+
+MANAGEMENT_MAP = {
+    "01":"Internally managed","08":"Internally managed","12":"Internally managed",
+    "15":"Internally managed","18":"Internally managed","21":"Internally managed",
+    "22":"Internally managed","23":"Internally managed","25":"Internally managed",
+    "27":"Internally managed","30":"Internally managed","31":"Internally managed",
+    "32":"Internally managed","34":"Internally managed","39":"Internally managed",
+    "43":"Internally managed","48":"Externally managed","49":"Externally managed",
+    "50":"Externally managed","51":"Externally managed","52":"Externally managed",
+    "53":"Externally managed","54":"Externally managed","59":"Internally managed",
+    "60":"Internally managed","63":"Internally managed","6B":"Internally managed",
+    "81":"Internally managed",
+}
+
+# ══════════════════════════════════════════════════════════════════════
+#  FERIADOS PERÚ + DÍAS HÁBILES
+# ══════════════════════════════════════════════════════════════════════
+_FIXED_HOLIDAYS = {(1,1),(5,1),(6,29),(7,28),(7,29),(8,30),(10,8),(11,1),(12,8),(12,25)}
+
+def _easter(year):
+    a=year%19; b=year//100; c=year%100; d=b//4; e=b%4
+    f=(b+8)//25; g=(b-f+1)//3; h=(19*a+b-d-g+15)%30
+    i=c//4; k=c%4; l=(32+2*e+2*i-h-k)%7
+    m=(a+11*h+22*l)//451
+    month=(h+l-7*m+114)//31
+    day=((h+l-7*m+114)%31)+1
+    return date(year,month,day)
+
+def _peru_holidays(year):
+    h = set()
+    for mo,da in _FIXED_HOLIDAYS:
+        try: h.add(date(year,mo,da))
+        except: pass
+    e = _easter(year)
+    h.add(e - timedelta(3)); h.add(e - timedelta(2))
+    return h
+
+def is_biz_day(d):
+    return d.weekday() < 5 and d not in _peru_holidays(d.year)
+
+def last_biz_day(year, month):
+    if month == 12:
+        nxt = date(year+1, 1, 1)
+    else:
+        nxt = date(year, month+1, 1)
+    d = nxt - timedelta(1)
+    while not is_biz_day(d):
+        d -= timedelta(1)
+    return d
+
+def get_12_month_ends(ref=None):
+    if ref is None: ref = date.today()
+    m, y = ref.month - 1, ref.year
+    if m == 0: m, y = 12, y-1
+    result = []
+    for _ in range(12):
+        result.append(last_biz_day(y, m))
+        m -= 1
+        if m == 0: m, y = 12, y-1
+    return list(reversed(result))
+
+# ══════════════════════════════════════════════════════════════════════
+#  LECTURA DE EXCEL
+# ══════════════════════════════════════════════════════════════════════
+def find_latest_xlsm(directory):
+    patterns = [
+        os.path.join(directory, "Inves*n Tematica*.xlsm"),
+        os.path.join(directory, "Inves*Tematica*.xlsm"),
+        os.path.join(directory, "*.xlsm"),
+    ]
+    files = []
+    for p in patterns:
+        files = glob.glob(p)
+        if files: break
+    if not files:
+        raise FileNotFoundError(f"No se encontró .xlsm en:\n{directory}")
+    def extract_dt(f):
+        name = os.path.basename(f)
+        m = re.search(r'(\d{6})', name)
+        if m:
+            s = m.group(1)
+            try: return date(int(s[2:]), int(s[:2]), 1)
+            except: pass
+        return date.min
+    return max(files, key=extract_dt)
+
+def read_valorizacion(filepath, target_date):
+    """Lee B:AS desde fila 3 (header). No refresca Power Query."""
+    try:
+        df = pd.read_excel(
+            filepath,
+            sheet_name=SHEET_VALORIZACION,
+            header=2,        # fila 3 = índice 2
+            usecols="B:AS",
+            engine="openpyxl",
+            dtype=str,
+        )
+        df = df.dropna(how="all")
+        df["_fecha"] = target_date.strftime("%d/%m/%Y")
+        return df
+    except Exception as e:
+        print(f"  [ERROR] Valorización: {e}")
+        return pd.DataFrame()
+
+def read_detallado(filepath):
+    try:
+        df = pd.read_excel(
+            filepath,
+            sheet_name=SHEET_DETALLADO,
+            header=0,
+            engine="openpyxl",
+            dtype=str,
+        )
+        return df
+    except Exception as e:
+        print(f"  [ERROR] Detallado: {e}")
+        return pd.DataFrame()
+
+def merge_detallado(val_df, det_df):
+    if val_df.empty or det_df.empty:
+        return val_df
+    det_cols = det_df.columns.tolist()
+    col_b_det = det_cols[1] if len(det_cols) > 1 else None
+    if col_b_det is None: return val_df
+
+    sel_det = [det_cols[i] for i in DETALLADO_COLS_IDX if i < len(det_cols)]
+    val_cols = val_df.columns.tolist()
+    # col H de Valorización = índice 6 en B:AS (B=0,C=1,D=2,E=3,F=4,G=5,H=6)
+    col_h_val = val_cols[6] if len(val_cols) > 6 else None
+    if col_h_val is None: return val_df
+
+    det_indexed = det_df.set_index(col_b_det)
+    for sc in sel_det:
+        if sc in det_indexed.columns:
+            label = f"DET_{sc}"
+            val_df[label] = val_df[col_h_val].map(
+                lambda x, c=sc: det_indexed[c].get(x, None) if x in det_indexed.index else None
+            )
+    return val_df
+
+def add_management(df):
+    col_b = df.columns[0]
+    df["Management"] = (
+        df[col_b].astype(str).str[:2].str.upper()
+        .map(MANAGEMENT_MAP).fillna("Unknown")
+    )
+    return df
+
+# ══════════════════════════════════════════════════════════════════════
+#  PIPELINE PRINCIPAL — carga todos los meses
+# ══════════════════════════════════════════════════════════════════════
+def build_datasets():
+    print("\n══ AFP Integra · Inversión Temática ══")
+
+    print("→ Buscando archivo Inversión Temática...")
+    inv_file = find_latest_xlsm(INVERSION_DIR)
+    print(f"  ✓ {os.path.basename(inv_file)}")
+
+    print("→ Calculando últimos 12 días hábiles de mes...")
+    month_ends = get_12_month_ends()
+    for d in month_ends:
+        print(f"  {d.strftime('%B %Y')}: {d.strftime('%d/%m/%Y')}")
+
+    print("→ Leyendo hoja Detallado...")
+    det_df = read_detallado(BENCHMARKING_FILE)
+    print(f"  ✓ {len(det_df)} filas · {len(det_df.columns)} cols")
+
+    datasets = {}
+    print("→ Leyendo Valorización por mes...")
+    for d in month_ends:
+        label = d.strftime("%m/%Y")
+        print(f"  {label}...", end=" ", flush=True)
+        df = read_valorizacion(inv_file, d)
+        if not df.empty:
+            df = merge_detallado(df, det_df)
+            df = add_management(df)
+            datasets[label] = df
+            print(f"✓ {len(df)} filas")
+        else:
+            print("✗ vacío")
+
+    print(f"\n✓ {len(datasets)} datasets listos\n")
+    return datasets
+
+# ══════════════════════════════════════════════════════════════════════
+#  CARGA GLOBAL (una sola vez al arrancar)
+# ══════════════════════════════════════════════════════════════════════
+print("Cargando datos...", flush=True)
+try:
+    DATASETS = build_datasets()
+except Exception as e:
+    print(f"[ERROR] {e}")
+    DATASETS = {}
+
+MONTH_OPTIONS = [{"label": m, "value": m} for m in DATASETS]
+CURRENT_MGMT_MAP = dict(MANAGEMENT_MAP)
+
+# ══════════════════════════════════════════════════════════════════════
+#  ESTILOS GLOBALES
+# ══════════════════════════════════════════════════════════════════════
+BG       = "#0a0c10"
+SURFACE  = "#111318"
+SURFACE2 = "#181b22"
+BORDER   = "#252933"
+ACCENT   = "#c8a96e"
+ACCENT2  = "#6ec8a9"
+MUTED    = "#7a7870"
+TEXT     = "#e8e2d6"
+DANGER   = "#c86e6e"
+
+FONT_MONO = "DM Mono, Consolas, monospace"
+FONT_SERIF = "Georgia, serif"
+
+def card(children, style=None):
+    s = {
+        "background": SURFACE2, "border": f"1px solid {BORDER}",
+        "borderRadius": "6px", "padding": "18px", "marginBottom": "16px",
+    }
+    if style: s.update(style)
+    return html.Div(children, style=s)
+
+def label(text):
+    return html.Div(text, style={
+        "fontSize": "10px", "color": MUTED, "letterSpacing": "1.5px",
+        "textTransform": "uppercase", "marginBottom": "6px",
+    })
+
+def btn(text, id, color=BORDER, style=None):
+    s = {
+        "padding": "7px 16px", "borderRadius": "4px",
+        "border": f"1px solid {color}", "background": SURFACE2,
+        "color": TEXT if color == BORDER else color,
+        "cursor": "pointer", "fontFamily": FONT_MONO, "fontSize": "12px",
+        "marginRight": "8px",
+    }
+    if color == ACCENT: s.update({"background": ACCENT, "color": "#000", "border": f"1px solid {ACCENT}"})
+    if style: s.update(style)
+    return html.Button(text, id=id, style=s)
+
+def inp(id, placeholder="", value="", style=None):
+    s = {
+        "padding": "7px 12px", "border": f"1px solid {BORDER}", "borderRadius": "4px",
+        "background": SURFACE, "color": TEXT, "fontFamily": FONT_MONO, "fontSize": "12px",
+        "outline": "none", "width": "100%",
+    }
+    if style: s.update(style)
+    return dcc.Input(id=id, placeholder=placeholder, value=value,
+                     debounce=False, style=s)
+
+def sel(id, options, value=None, multi=False, placeholder="Seleccionar..."):
+    return dcc.Dropdown(
+        id=id, options=options, value=value, multi=multi,
+        placeholder=placeholder, clearable=True,
+        style={"fontFamily": FONT_MONO, "fontSize": "12px"},
+        className="dark-dropdown",
+    )
+
+# ══════════════════════════════════════════════════════════════════════
+#  LAYOUT
+# ══════════════════════════════════════════════════════════════════════
+app = dash.Dash(
+    __name__,
+    title="AFP Integra · Inversión Temática",
+    suppress_callback_exceptions=True,
+)
+
+app.index_string = """
+<!DOCTYPE html>
+<html>
+<head>
+    {%metas%}
+    <title>{%title%}</title>
+    {%favicon%}
+    {%css%}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,300&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0a0c10; color: #e8e2d6; font-family: 'DM Mono', monospace; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: #0a0c10; }
+        ::-webkit-scrollbar-thumb { background: #252933; border-radius: 3px; }
+        .Select-control, .Select-menu-outer { background: #111318 !important; border-color: #252933 !important; color: #e8e2d6 !important; }
+        .Select-value-label, .Select-option { color: #e8e2d6 !important; font-family: 'DM Mono', monospace !important; font-size: 12px !important; }
+        .Select-option:hover, .Select-option.is-focused { background: #252933 !important; }
+        .Select-placeholder { color: #7a7870 !important; font-family: 'DM Mono', monospace !important; font-size: 12px !important; }
+        .dark-dropdown .Select-control { background: #111318 !important; border: 1px solid #252933 !important; }
+        .dark-dropdown .Select-menu-outer { background: #111318 !important; border: 1px solid #252933 !important; }
+        .dark-dropdown input { color: #e8e2d6 !important; }
+        .dark-dropdown .Select-value-label { color: #e8e2d6 !important; }
+        .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table { font-family: 'DM Mono', monospace !important; }
+        .tab--selected { border-top: 2px solid #c8a96e !important; color: #c8a96e !important; }
+        .rc-slider-track { background: #c8a96e !important; }
+        .rc-slider-handle { border-color: #c8a96e !important; }
+        input[type=text], input[type=number] { color: #e8e2d6 !important; }
+        textarea { font-family: 'DM Mono', monospace; font-size: 12px; color: #e8e2d6; background: #0a0c10; border: 1px solid #252933; border-radius: 4px; padding: 10px; width: 100%; resize: vertical; outline: none; }
+    </style>
+</head>
+<body>
+    {%app_entry%}
+    <footer>
+        {%config%}
+        {%scripts%}
+        {%renderer%}
+    </footer>
+</body>
+</html>
+"""
+
+# ── HEADER ────────────────────────────────────────────────────────────
+header = html.Div([
+    html.Div([
+        html.Span("AFP Integra", style={"fontFamily": FONT_SERIF, "fontSize": "20px",
+                                        "fontWeight": "bold", "color": ACCENT}),
+        html.Span(" · Inversión Temática", style={"fontFamily": FONT_SERIF,
+                                                   "fontSize": "18px", "color": MUTED,
+                                                   "fontStyle": "italic"}),
+    ]),
+    html.Div([
+        html.Span(id="rec-status", children="● Grabación inactiva",
+                  style={"fontSize": "11px", "color": MUTED, "marginRight": "12px"}),
+        html.Button("⏺ Iniciar grabación", id="btn-rec",
+                    style={"padding": "6px 14px", "borderRadius": "4px",
+                           "border": f"1px solid {BORDER}", "background": SURFACE2,
+                           "color": TEXT, "cursor": "pointer",
+                           "fontFamily": FONT_MONO, "fontSize": "12px"}),
+    ], style={"display": "flex", "alignItems": "center"}),
+], style={
+    "display": "flex", "justifyContent": "space-between", "alignItems": "center",
+    "padding": "14px 28px", "background": SURFACE,
+    "borderBottom": f"1px solid {BORDER}", "position": "sticky", "top": 0, "zIndex": 100,
+})
+
+# ── TABS ──────────────────────────────────────────────────────────────
+tabs = dcc.Tabs(id="tabs", value="tab-data", children=[
+    dcc.Tab(label="📊 Datos",               value="tab-data"),
+    dcc.Tab(label="➕ Columnas",            value="tab-cols"),
+    dcc.Tab(label="∑ Sumatorias",           value="tab-sums"),
+    dcc.Tab(label="🏷 Management",          value="tab-mgmt"),
+    dcc.Tab(label="⚙ Macro",               value="tab-macro"),
+], style={"marginBottom": "0px"},
+colors={"border": BORDER, "primary": ACCENT, "background": SURFACE})
+
+# ── PANEL DATOS ───────────────────────────────────────────────────────
+panel_data = html.Div([
+    # Selector de mes + columnas
+    html.Div([
+        html.Div([
+            label("Mes"),
+            sel("sel-month", MONTH_OPTIONS, placeholder="Elige un mes..."),
+        ], style={"width": "160px"}),
+        html.Div([
+            label("Columnas visibles"),
+            sel("sel-cols", [], multi=True, placeholder="Todas las columnas..."),
+        ], style={"flex": "1"}),
+        html.Div([
+            label("Búsqueda"),
+            inp("inp-search", "Filtrar tabla..."),
+        ], style={"width": "220px"}),
+    ], style={"display": "flex", "gap": "16px", "alignItems": "flex-end",
+              "marginBottom": "14px", "flexWrap": "wrap"}),
+
+    html.Div(id="row-count", style={"color": MUTED, "fontSize": "11px",
+                                    "marginBottom": "8px"}),
+    html.Div(id="table-container"),
+    html.Div([
+        html.Button("⬇ Exportar CSV", id="btn-csv", n_clicks=0,
+                    style={"padding": "6px 14px", "borderRadius": "4px",
+                           "border": f"1px solid {BORDER}", "background": SURFACE2,
+                           "color": TEXT, "cursor": "pointer",
+                           "fontFamily": FONT_MONO, "fontSize": "12px",
+                           "marginTop": "10px"}),
+        dcc.Download(id="download-csv"),
+    ]),
+])
+
+# ── PANEL COLUMNAS PERSONALIZADAS ─────────────────────────────────────
+panel_cols = html.Div([
+    card([
+        html.Div("Nueva columna condicional", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "14px", "fontWeight": "300",
+        }),
+        html.Div([
+            html.Div([label("Nombre nueva columna"),
+                      inp("inp-new-col-name", "Ej: Asset class 100")],
+                     style={"flex": "1"}),
+            html.Div([label("Valor si SE CUMPLE"),
+                      inp("inp-new-col-val", "Ej: FI - Corpo")],
+                     style={"flex": "1"}),
+            html.Div([label("Valor si NO cumple (else)"),
+                      inp("inp-new-col-else", "(vacío = blanco)")],
+                     style={"flex": "1"}),
+        ], style={"display": "flex", "gap": "12px", "marginBottom": "14px",
+                  "flexWrap": "wrap"}),
+
+        html.Div([
+            label("Condiciones (todas deben cumplirse — AND)"),
+            html.Div(id="conditions-container"),
+            html.Button("+ Agregar condición", id="btn-add-cond", n_clicks=0,
+                        style={"padding": "5px 12px", "borderRadius": "4px",
+                               "border": f"1px solid {BORDER}", "background": SURFACE2,
+                               "color": TEXT, "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "11px",
+                               "marginTop": "8px"}),
+        ], style={"marginBottom": "14px"}),
+
+        html.Div([
+            html.Button("✓ Aplicar columna", id="btn-apply-col", n_clicks=0,
+                        style={"padding": "7px 16px", "borderRadius": "4px",
+                               "border": f"1px solid {ACCENT}",
+                               "background": ACCENT, "color": "#000",
+                               "cursor": "pointer", "fontFamily": FONT_MONO,
+                               "fontSize": "12px", "marginRight": "10px"}),
+            html.Span(id="col-feedback", style={"color": ACCENT2, "fontSize": "12px"}),
+        ]),
+    ]),
+
+    card([
+        html.Div("Columnas creadas", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "12px", "fontWeight": "300",
+        }),
+        html.Div(id="custom-cols-list",
+                 style={"color": MUTED, "fontSize": "12px"}),
+    ]),
+
+    # Valores únicos helper
+    card([
+        html.Div("Ver valores únicos de una columna", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "12px", "fontWeight": "300",
+        }),
+        html.Div([
+            html.Div([label("Columna"),
+                      sel("sel-uniq-col", [], placeholder="Elige columna...")],
+                     style={"width": "220px"}),
+            html.Button("Ver valores", id="btn-uniq", n_clicks=0,
+                        style={"padding": "7px 14px", "borderRadius": "4px",
+                               "border": f"1px solid {BORDER}", "background": SURFACE2,
+                               "color": TEXT, "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "12px",
+                               "marginTop": "18px"}),
+        ], style={"display": "flex", "gap": "12px", "alignItems": "flex-end"}),
+        html.Div(id="uniq-values-out", style={"marginTop": "12px"}),
+    ]),
+])
+
+# ── PANEL SUMATORIAS ──────────────────────────────────────────────────
+panel_sums = html.Div([
+    card([
+        html.Div("Crear sumatoria condicional", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "14px", "fontWeight": "300",
+        }),
+        html.Div([
+            html.Div([label("Columna a SUMAR"),
+                      sel("sel-sum-col", [], placeholder="Columna numérica...")],
+                     style={"flex": "1"}),
+            html.Div([label("Columna FILTRO"),
+                      sel("sel-sum-filter-col", [], placeholder="Filtrar donde...")],
+                     style={"flex": "1"}),
+            html.Div([label("Valor del filtro"),
+                      inp("inp-sum-filter-val", "Ej: Listed Equity")],
+                     style={"flex": "1"}),
+            html.Div([label("Etiqueta en tabla"),
+                      inp("inp-sum-label", "Ej: Listed Equity")],
+                     style={"flex": "1"}),
+        ], style={"display": "flex", "gap": "12px", "marginBottom": "14px",
+                  "flexWrap": "wrap"}),
+        html.Div([
+            html.Button("+ Agregar sumatoria", id="btn-add-sum", n_clicks=0,
+                        style={"padding": "7px 16px", "borderRadius": "4px",
+                               "border": f"1px solid {ACCENT}", "background": ACCENT,
+                               "color": "#000", "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "12px",
+                               "marginRight": "10px"}),
+            html.Span(id="sum-feedback", style={"color": ACCENT2, "fontSize": "12px"}),
+        ]),
+    ]),
+
+    html.Div(id="sum-results-area"),
+])
+
+# ── PANEL MANAGEMENT ──────────────────────────────────────────────────
+panel_mgmt = html.Div([
+    card([
+        html.Div("Tabla de equivalencias — Management", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "8px", "fontWeight": "300",
+        }),
+        html.P("Los primeros 2 dígitos de la columna B de Valorización se mapean al tipo de gestión. "
+               "Edita la columna 'Tipo de Gestión' directamente y luego presiona Reaplicar.",
+               style={"color": MUTED, "fontSize": "12px", "marginBottom": "14px"}),
+        dash_table.DataTable(
+            id="mgmt-table",
+            columns=[
+                {"name": "Código (2 díg.)", "id": "codigo", "editable": False},
+                {"name": "Tipo de Gestión", "id": "tipo",   "editable": True},
+            ],
+            data=[{"codigo": k, "tipo": v} for k, v in MANAGEMENT_MAP.items()],
+            editable=True,
+            style_table={"overflowX": "auto"},
+            style_header={"backgroundColor": SURFACE, "color": MUTED,
+                          "fontFamily": FONT_MONO, "fontSize": "11px",
+                          "border": f"1px solid {BORDER}"},
+            style_cell={"backgroundColor": SURFACE2, "color": TEXT,
+                        "fontFamily": FONT_MONO, "fontSize": "12px",
+                        "border": f"1px solid {BORDER}", "padding": "8px 12px"},
+            style_data_conditional=[
+                {"if": {"column_id": "codigo"},
+                 "color": ACCENT2, "fontWeight": "500"},
+            ],
+        ),
+        html.Div([
+            html.Button("↺ Reaplicar a datos actuales", id="btn-reapply-mgmt",
+                        n_clicks=0, style={
+                            "padding": "7px 16px", "borderRadius": "4px",
+                            "border": f"1px solid {ACCENT}", "background": ACCENT,
+                            "color": "#000", "cursor": "pointer",
+                            "fontFamily": FONT_MONO, "fontSize": "12px",
+                            "marginTop": "14px", "marginRight": "10px",
+                        }),
+            html.Span(id="mgmt-feedback",
+                      style={"color": ACCENT2, "fontSize": "12px"}),
+        ]),
+    ]),
+])
+
+# ── PANEL MACRO ───────────────────────────────────────────────────────
+panel_macro = html.Div([
+    card([
+        html.Div("Código de macro grabado", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "12px", "fontWeight": "300",
+        }),
+        html.Pre(id="macro-log",
+                 children="// La grabación iniciará al presionar 'Iniciar grabación'\n",
+                 style={"background": BG, "border": f"1px solid {BORDER}",
+                        "borderRadius": "4px", "padding": "14px",
+                        "fontSize": "11px", "color": ACCENT2, "lineHeight": "1.9",
+                        "maxHeight": "260px", "overflowY": "auto",
+                        "fontFamily": FONT_MONO, "whiteSpace": "pre-wrap"}),
+        html.Div([
+            html.Button("⬇ Exportar .txt", id="btn-export-macro", n_clicks=0,
+                        style={"padding": "7px 16px", "borderRadius": "4px",
+                               "border": f"1px solid {ACCENT}", "background": ACCENT,
+                               "color": "#000", "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "12px",
+                               "marginRight": "10px", "marginTop": "10px"}),
+            html.Button("🗑 Limpiar", id="btn-clear-macro", n_clicks=0,
+                        style={"padding": "7px 14px", "borderRadius": "4px",
+                               "border": f"1px solid {BORDER}", "background": SURFACE2,
+                               "color": TEXT, "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "12px",
+                               "marginTop": "10px"}),
+            dcc.Download(id="download-macro"),
+        ]),
+    ]),
+
+    card([
+        html.Div("Ejecutar macro", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "12px", "fontWeight": "300",
+        }),
+        html.P("Pega un código de macro exportado previamente:",
+               style={"color": MUTED, "fontSize": "12px", "marginBottom": "10px"}),
+        dcc.Textarea(
+            id="macro-input",
+            placeholder=(
+                "// Ejemplo:\n"
+                "SELECT_MONTH 05/2026\n"
+                "SHOW_COLS Nemónico,Management,DET_Clase_Activo\n"
+                "ADD_COLUMN MiClase VALUE FI-Corpo ELSE Other "
+                "CONDITIONS [{\"col\":\"DET_Clase_Activo\",\"op\":\"=\",\"val\":\"Fixed Income\"}]\n"
+                "SUM col:Valor Mercado (S/) WHERE col:DET_Clasificacion=Listed Equity LABEL Listed\n"
+            ),
+            style={"height": "160px"},
+        ),
+        html.Div([
+            html.Button("▶ Ejecutar", id="btn-run-macro", n_clicks=0,
+                        style={"padding": "7px 16px", "borderRadius": "4px",
+                               "border": f"1px solid {ACCENT}", "background": ACCENT,
+                               "color": "#000", "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "12px",
+                               "marginRight": "10px", "marginTop": "10px"}),
+            html.Button("✕ Limpiar", id="btn-clear-macro-input", n_clicks=0,
+                        style={"padding": "7px 14px", "borderRadius": "4px",
+                               "border": f"1px solid {BORDER}", "background": SURFACE2,
+                               "color": TEXT, "cursor": "pointer",
+                               "fontFamily": FONT_MONO, "fontSize": "12px",
+                               "marginTop": "10px"}),
+        ]),
+        html.Pre(id="macro-exec-log",
+                 style={"background": BG, "border": f"1px solid {BORDER}",
+                        "borderRadius": "4px", "padding": "12px", "marginTop": "12px",
+                        "fontSize": "11px", "color": TEXT, "lineHeight": "1.9",
+                        "maxHeight": "200px", "overflowY": "auto",
+                        "fontFamily": FONT_MONO, "whiteSpace": "pre-wrap",
+                        "display": "none"},
+                 id="macro-exec-log-wrap"),
+    ]),
+])
+
+# ── ROOT LAYOUT ───────────────────────────────────────────────────────
+app.layout = html.Div([
+    dcc.Store(id="store-month",     data=None),
+    dcc.Store(id="store-custom-cols", data={}),   # {name: {value, else_val, conditions}}
+    dcc.Store(id="store-sum-rules", data=[]),
+    dcc.Store(id="store-macro-log", data=[]),
+    dcc.Store(id="store-recording", data=False),
+    dcc.Store(id="store-mgmt-map",  data=dict(MANAGEMENT_MAP)),
+
+    header,
+
+    html.Div([
+        tabs,
+        html.Div(id="tab-content", style={"padding": "20px 24px"}),
+    ], style={"maxWidth": "1600px", "margin": "0 auto", "padding": "0 8px"}),
+
+], style={"background": BG, "minHeight": "100vh", "color": TEXT,
+          "fontFamily": FONT_MONO})
+
+# ══════════════════════════════════════════════════════════════════════
+#  HELPER: obtener df del mes activo + custom cols aplicadas
+# ══════════════════════════════════════════════════════════════════════
+def get_df(month, custom_cols_store, mgmt_map_store):
+    if not month or month not in DATASETS:
+        return pd.DataFrame()
+    df = DATASETS[month].copy()
+    # Reaplicar management con mapa actualizado
+    col_b = df.columns[0]
+    df["Management"] = (
+        df[col_b].astype(str).str[:2].str.upper()
+        .map(mgmt_map_store).fillna("Unknown")
+    )
+    # Aplicar columnas custom
+    for name, cfg in custom_cols_store.items():
+        conditions = cfg.get("conditions", [])
+        val_yes = cfg.get("value", "")
+        val_no  = cfg.get("else_val", "")
+        def apply_fn(row, conds=conditions, vy=val_yes, vn=val_no):
+            for c in conds:
+                rv = str(row.get(c["col"], "") or "")
+                op, cv = c["op"], c["val"]
+                if op == "=":          match = rv == cv
+                elif op == "!=":       match = rv != cv
+                elif op == "contains": match = cv.lower() in rv.lower()
+                elif op == "starts":   match = rv.lower().startswith(cv.lower())
+                elif op == ">":
+                    try: match = float(rv) > float(cv)
+                    except: match = False
+                elif op == "<":
+                    try: match = float(rv) < float(cv)
+                    except: match = False
+                else: match = False
+                if not match: return vn
+            return vy
+        df[name] = df.apply(apply_fn, axis=1)
+    return df
+
+# ══════════════════════════════════════════════════════════════════════
+#  CALLBACKS
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Renderizar contenido del tab activo ───────────────────────────────
+@app.callback(Output("tab-content", "children"), Input("tabs", "value"))
+def render_tab(tab):
+    if tab == "tab-data":  return panel_data
+    if tab == "tab-cols":  return panel_cols
+    if tab == "tab-sums":  return panel_sums
+    if tab == "tab-mgmt":  return panel_mgmt
+    if tab == "tab-macro": return panel_macro
+    return html.Div()
+
+# ── Guardar mes seleccionado + grabar macro ───────────────────────────
+@app.callback(
+    Output("store-month",   "data"),
+    Output("store-macro-log","data", allow_duplicate=True),
+    Input("sel-month", "value"),
+    State("store-recording", "data"),
+    State("store-macro-log", "data"),
+    prevent_initial_call=True,
+)
+def on_month_select(month, recording, macro_log):
+    log = macro_log or []
+    if recording and month:
+        log = log + [f"SELECT_MONTH {month}"]
+    return month, log
+
+# ── Poblar opciones de columnas según mes ─────────────────────────────
+@app.callback(
+    Output("sel-cols",          "options"),
+    Output("sel-cols",          "value"),
+    Output("sel-sum-col",       "options"),
+    Output("sel-sum-filter-col","options"),
+    Output("sel-uniq-col",      "options"),
+    Input("store-month",        "data"),
+    State("store-custom-cols",  "data"),
+    State("store-mgmt-map",     "data"),
+)
+def update_col_options(month, custom_cols, mgmt_map):
+    if not month or month not in DATASETS:
+        empty = []
+        return empty, [], empty, empty, empty
+    df = get_df(month, custom_cols or {}, mgmt_map or MANAGEMENT_MAP)
+    cols = list(df.columns)
+    options = [{"label": c, "value": c} for c in cols]
+    # Default: col B (obligatoria) + primera DET_ + Management + primeras 8 cols
+    col_b = cols[0]
+    det_cols = [c for c in cols if c.startswith("DET_")]
+    defaults = list(dict.fromkeys(
+        [col_b] + det_cols[:1] + ["Management"] + cols[1:9]
+    ))
+    defaults = [c for c in defaults if c in cols]
+    return options, defaults, options, options, options
+
+# ── Tabla principal ───────────────────────────────────────────────────
+@app.callback(
+    Output("table-container", "children"),
+    Output("row-count",       "children"),
+    Input("store-month",      "data"),
+    Input("sel-cols",         "value"),
+    Input("inp-search",       "value"),
+    State("store-custom-cols","data"),
+    State("store-mgmt-map",   "data"),
+)
+def render_table(month, vis_cols, search, custom_cols, mgmt_map):
+    if not month:
+        return html.Div("← Selecciona un mes para comenzar",
+                        style={"color": MUTED, "padding": "40px",
+                               "textAlign": "center", "fontFamily": FONT_SERIF,
+                               "fontSize": "18px", "fontWeight": "300"}), ""
+    df = get_df(month, custom_cols or {}, mgmt_map or MANAGEMENT_MAP)
+    if df.empty:
+        return html.Div("Sin datos", style={"color": MUTED}), ""
+
+    # Filtro búsqueda
+    if search:
+        mask = df.apply(lambda row: row.astype(str).str.contains(
+            search, case=False, na=False).any(), axis=1)
+        df = df[mask]
+
+    # Columnas visibles
+    show = [c for c in (vis_cols or df.columns.tolist()) if c in df.columns]
+    if not show:
+        show = df.columns.tolist()[:15]
+    df_show = df[show].fillna("").astype(str)
+
+    columns = [{"name": c, "id": c, "selectable": True} for c in show]
+
+    table = dash_table.DataTable(
+        id="main-table",
+        data=df_show.to_dict("records"),
+        columns=columns,
+        page_size=100,
+        page_action="native",
+        sort_action="native",
+        filter_action="native",
+        column_selectable="multi",
+        style_table={"overflowX": "auto", "borderRadius": "6px",
+                     "border": f"1px solid {BORDER}"},
+        style_header={
+            "backgroundColor": SURFACE, "color": MUTED,
+            "fontFamily": FONT_MONO, "fontSize": "11px",
+            "border": f"1px solid {BORDER}",
+            "letterSpacing": "0.5px", "whiteSpace": "nowrap",
+        },
+        style_cell={
+            "backgroundColor": SURFACE2, "color": TEXT,
+            "fontFamily": FONT_MONO, "fontSize": "12px",
+            "border": f"1px solid {BORDER}",
+            "padding": "6px 12px", "whiteSpace": "nowrap",
+            "overflow": "hidden", "textOverflow": "ellipsis",
+            "maxWidth": "220px",
+        },
+        style_data_conditional=[
+            {"if": {"filter_query": '{Management} = "Internally managed"',
+                    "column_id": "Management"},
+             "color": ACCENT2},
+            {"if": {"filter_query": '{Management} = "Externally managed"',
+                    "column_id": "Management"},
+             "color": ACCENT},
+            {"if": {"row_index": "odd"}, "backgroundColor": SURFACE},
+        ],
+        tooltip_data=[{c: {"value": str(r[c]), "type": "markdown"}
+                       for c in show} for r in df_show.to_dict("records")],
+        tooltip_duration=None,
+    )
+    count = html.Span(f"{len(df):,} filas · {len(show)} columnas visibles",
+                      style={"color": MUTED, "fontSize": "11px"})
+    return table, count
+
+# ── Export CSV ────────────────────────────────────────────────────────
+@app.callback(
+    Output("download-csv", "data"),
+    Input("btn-csv", "n_clicks"),
+    State("store-month",     "data"),
+    State("sel-cols",        "value"),
+    State("inp-search",      "value"),
+    State("store-custom-cols","data"),
+    State("store-mgmt-map",  "data"),
+    prevent_initial_call=True,
+)
+def export_csv(n, month, vis_cols, search, custom_cols, mgmt_map):
+    if not n or not month: return no_update
+    df = get_df(month, custom_cols or {}, mgmt_map or MANAGEMENT_MAP)
+    if search:
+        mask = df.apply(lambda r: r.astype(str).str.contains(
+            search, case=False, na=False).any(), axis=1)
+        df = df[mask]
+    show = [c for c in (vis_cols or df.columns.tolist()) if c in df.columns]
+    return dcc.send_data_frame(df[show].to_csv, f"inversion_{month.replace('/','_')}.csv",
+                               index=False)
+
+# ── Condiciones dinámicas ─────────────────────────────────────────────
+@app.callback(
+    Output("conditions-container", "children"),
+    Input("btn-add-cond", "n_clicks"),
+    State("conditions-container", "children"),
+    State("store-month", "data"),
+    State("store-custom-cols", "data"),
+    State("store-mgmt-map", "data"),
+    prevent_initial_call=True,
+)
+def add_condition(n, existing, month, custom_cols, mgmt_map):
+    existing = existing or []
+    df = get_df(month, custom_cols or {}, mgmt_map or MANAGEMENT_MAP)
+    cols = list(df.columns) if not df.empty else []
+    col_opts = [{"label": c, "value": c} for c in cols]
+    op_opts  = [{"label": o, "value": o}
+                for o in ["=", "!=", "contains", "starts_with", ">", "<"]]
+    idx = len(existing)
+    row = html.Div([
+        html.Div([
+            dcc.Dropdown(id={"type": "cond-col", "index": idx},
+                         options=col_opts, placeholder="Columna",
+                         style={"fontFamily": FONT_MONO, "fontSize": "12px",
+                                "minWidth": "180px"},
+                         className="dark-dropdown"),
+        ], style={"flex": "2"}),
+        html.Div([
+            dcc.Dropdown(id={"type": "cond-op", "index": idx},
+                         options=op_opts, value="=", clearable=False,
+                         style={"fontFamily": FONT_MONO, "fontSize": "12px"},
+                         className="dark-dropdown"),
+        ], style={"flex": "1"}),
+        html.Div([
+            dcc.Input(id={"type": "cond-val", "index": idx},
+                      placeholder="Valor", debounce=False,
+                      style={"padding": "7px 10px", "border": f"1px solid {BORDER}",
+                             "borderRadius": "4px", "background": SURFACE,
+                             "color": TEXT, "fontFamily": FONT_MONO,
+                             "fontSize": "12px", "width": "100%"}),
+        ], style={"flex": "2"}),
+    ], style={"display": "flex", "gap": "8px", "marginBottom": "6px",
+              "alignItems": "center"})
+    return existing + [row]
+
+# ── Aplicar columna personalizada ─────────────────────────────────────
+@app.callback(
+    Output("store-custom-cols", "data"),
+    Output("col-feedback",      "children"),
+    Output("store-macro-log",   "data", allow_duplicate=True),
+    Input("btn-apply-col",      "n_clicks"),
+    State("inp-new-col-name",   "value"),
+    State("inp-new-col-val",    "value"),
+    State("inp-new-col-else",   "value"),
+    State({"type": "cond-col", "index": ALL}, "value"),
+    State({"type": "cond-op",  "index": ALL}, "value"),
+    State({"type": "cond-val", "index": ALL}, "value"),
+    State("store-custom-cols",  "data"),
+    State("store-recording",    "data"),
+    State("store-macro-log",    "data"),
+    prevent_initial_call=True,
+)
+def apply_custom_col(n, name, val, else_val, cols, ops, vals,
+                     existing, recording, macro_log):
+    if not n or not name:
+        return no_update, "⚠ Ingresa un nombre de columna", no_update
+    name = name.strip()
+    conditions = []
+    for c, o, v in zip(cols or [], ops or [], vals or []):
+        if c:
+            conditions.append({"col": c, "op": o or "=", "val": v or ""})
+    existing = existing or {}
+    existing[name] = {
+        "value":      val or "",
+        "else_val":   else_val or "",
+        "conditions": conditions,
+    }
+    log = macro_log or []
+    if recording:
+        log = log + [
+            f"ADD_COLUMN {name} VALUE {val or ''} ELSE {else_val or ''} "
+            f"CONDITIONS {json.dumps(conditions)}"
+        ]
+    return existing, f"✓ Columna '{name}' creada", log
+
+# ── Lista de columnas custom ──────────────────────────────────────────
+@app.callback(
+    Output("custom-cols-list", "children"),
+    Input("store-custom-cols", "data"),
+)
+def show_custom_cols(data):
+    data = data or {}
+    if not data:
+        return html.Span("Aún no se han creado columnas personalizadas.",
+                         style={"color": MUTED})
+    items = []
+    for name, cfg in data.items():
+        conds_txt = " AND ".join(
+            f"{c['col']} {c['op']} '{c['val']}'"
+            for c in cfg.get("conditions", [])
+        )
+        items.append(html.Div([
+            html.Div([
+                html.Span(name, style={"color": ACCENT, "fontWeight": "500"}),
+                html.Span(f"  →  '{cfg['value']}'" +
+                          (f"  |  ELSE '{cfg['else_val']}'" if cfg['else_val'] else "") +
+                          (f"  |  IF {conds_txt}" if conds_txt else ""),
+                          style={"color": MUTED, "fontSize": "11px", "marginLeft": "8px"}),
+            ], style={"flex": "1"}),
+        ], style={"display": "flex", "justifyContent": "space-between",
+                  "padding": "8px 0", "borderBottom": f"1px solid {BORDER}"}))
+    return items
+
+# ── Valores únicos ────────────────────────────────────────────────────
+@app.callback(
+    Output("uniq-values-out", "children"),
+    Input("btn-uniq",         "n_clicks"),
+    State("sel-uniq-col",     "value"),
+    State("store-month",      "data"),
+    State("store-custom-cols","data"),
+    State("store-mgmt-map",   "data"),
+    prevent_initial_call=True,
+)
+def show_unique_values(n, col, month, custom_cols, mgmt_map):
+    if not n or not col or not month: return no_update
+    df = get_df(month, custom_cols or {}, mgmt_map or MANAGEMENT_MAP)
+    if df.empty or col not in df.columns: return no_update
+    vals = sorted(df[col].dropna().astype(str).unique().tolist())
+    chips = [
+        html.Span(v, style={
+            "display": "inline-block", "padding": "3px 10px",
+            "margin": "3px", "borderRadius": "3px",
+            "border": f"1px solid {BORDER}", "background": SURFACE,
+            "color": TEXT, "fontSize": "11px",
+        }) for v in vals[:100]
+    ]
+    suffix = html.Span(f"  (+{len(vals)-100} más)" if len(vals) > 100 else "",
+                       style={"color": MUTED, "fontSize": "11px"})
+    return html.Div([
+        html.Div(f"{len(vals)} valores únicos en '{col}':",
+                 style={"color": MUTED, "fontSize": "11px", "marginBottom": "8px"}),
+        html.Div(chips + [suffix]),
+    ])
+
+# ── Agregar sumatoria ─────────────────────────────────────────────────
+@app.callback(
+    Output("store-sum-rules", "data"),
+    Output("sum-feedback",    "children"),
+    Output("store-macro-log", "data", allow_duplicate=True),
+    Input("btn-add-sum",      "n_clicks"),
+    State("sel-sum-col",          "value"),
+    State("sel-sum-filter-col",   "value"),
+    State("inp-sum-filter-val",   "value"),
+    State("inp-sum-label",        "value"),
+    State("store-sum-rules",  "data"),
+    State("store-recording",  "data"),
+    State("store-macro-log",  "data"),
+    prevent_initial_call=True,
+)
+def add_sum_rule(n, sum_col, filter_col, filter_val, lbl,
+                 rules, recording, macro_log):
+    if not n or not sum_col or not filter_col or not filter_val:
+        return no_update, "⚠ Completa todos los campos", no_update
+    rules = rules or []
+    rules = rules + [{
+        "sum_col": sum_col, "filter_col": filter_col,
+        "filter_val": filter_val, "label": lbl or filter_val,
+    }]
+    log = macro_log or []
+    if recording:
+        log = log + [f"SUM col:{sum_col} WHERE col:{filter_col}={filter_val} LABEL {lbl or filter_val}"]
+    return rules, f"✓ Sumatoria '{lbl or filter_val}' agregada", log
+
+# ── Renderizar tabla de sumatorias ────────────────────────────────────
+@app.callback(
+    Output("sum-results-area", "children"),
+    Input("store-sum-rules",  "data"),
+    Input("store-month",      "data"),
+    State("store-custom-cols","data"),
+    State("store-mgmt-map",   "data"),
+)
+def render_sum_table(rules, month, custom_cols, mgmt_map):
+    rules = rules or []
+    if not rules or not month:
+        return html.Div()
+    df = get_df(month, custom_cols or {}, mgmt_map or MANAGEMENT_MAP)
+    if df.empty: return html.Div()
+
+    rows_data, total = [], 0
+    for r in rules:
+        sc, fc, fv, lbl = r["sum_col"], r["filter_col"], r["filter_val"], r["label"]
+        if sc not in df.columns or fc not in df.columns:
+            rows_data.append({"Categoría": lbl, "Sumatoria": "col no encontrada"})
+            continue
+        mask = df[fc].astype(str) == fv
+        try:
+            s = pd.to_numeric(df.loc[mask, sc], errors="coerce").sum()
+            total += s
+            rows_data.append({"Categoría": lbl,
+                               "Sumatoria": f"{s:,.2f}"})
+        except:
+            rows_data.append({"Categoría": lbl, "Sumatoria": "error"})
+
+    rows_data.append({"Categoría": "TOTAL", "Sumatoria": f"{total:,.2f}"})
+
+    tbl = dash_table.DataTable(
+        data=rows_data,
+        columns=[{"name": "Categoría", "id": "Categoría"},
+                 {"name": "Sumatoria", "id": "Sumatoria"}],
+        editable=False,
+        style_table={"maxWidth": "500px", "borderRadius": "6px",
+                     "border": f"1px solid {BORDER}"},
+        style_header={"backgroundColor": SURFACE, "color": MUTED,
+                      "fontFamily": FONT_MONO, "fontSize": "11px",
+                      "border": f"1px solid {BORDER}"},
+        style_cell={"backgroundColor": SURFACE2, "color": TEXT,
+                    "fontFamily": FONT_MONO, "fontSize": "12px",
+                    "border": f"1px solid {BORDER}", "padding": "8px 14px"},
+        style_data_conditional=[
+            {"if": {"filter_query": '{Categoría} = "TOTAL"'},
+             "fontWeight": "700", "color": ACCENT,
+             "backgroundColor": f"rgba(200,169,110,0.07)"},
+        ],
+    )
+
+    fig = px.bar(
+        pd.DataFrame([r for r in rows_data if r["Categoría"] != "TOTAL"]),
+        x="Categoría", y="Sumatoria",
+        template="plotly_dark",
+        color_discrete_sequence=[ACCENT],
+    )
+    fig.update_layout(
+        paper_bgcolor=SURFACE2, plot_bgcolor=SURFACE,
+        font={"family": FONT_MONO, "color": TEXT, "size": 11},
+        margin={"t": 20, "b": 40, "l": 40, "r": 20},
+        height=280,
+    )
+
+    return card([
+        html.Div("Tabla de sumatorias", style={
+            "fontFamily": FONT_SERIF, "fontSize": "17px",
+            "color": ACCENT, "marginBottom": "14px", "fontWeight": "300",
+        }),
+        html.Div([
+            html.Div(tbl, style={"flex": "1"}),
+            html.Div(dcc.Graph(figure=fig, config={"displayModeBar": False}),
+                     style={"flex": "2"}),
+        ], style={"display": "flex", "gap": "24px", "alignItems": "flex-start",
+                  "flexWrap": "wrap"}),
+        html.Button("✕ Limpiar sumatorias", id="btn-clear-sums", n_clicks=0,
+                    style={"padding": "6px 14px", "borderRadius": "4px",
+                           "border": f"1px solid {BORDER}", "background": SURFACE2,
+                           "color": DANGER, "cursor": "pointer",
+                           "fontFamily": FONT_MONO, "fontSize": "11px",
+                           "marginTop": "14px"}),
+    ])
+
+@app.callback(
+    Output("store-sum-rules", "data", allow_duplicate=True),
+    Input("btn-clear-sums",   "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_sums(n):
+    return [] if n else no_update
+
+# ── Management: reaplicar ─────────────────────────────────────────────
+@app.callback(
+    Output("store-mgmt-map",  "data"),
+    Output("mgmt-feedback",   "children"),
+    Output("store-macro-log", "data", allow_duplicate=True),
+    Input("btn-reapply-mgmt", "n_clicks"),
+    State("mgmt-table",       "data"),
+    State("store-recording",  "data"),
+    State("store-macro-log",  "data"),
+    prevent_initial_call=True,
+)
+def reapply_mgmt(n, tbl_data, recording, macro_log):
+    if not n: return no_update, "", no_update
+    new_map = {row["codigo"]: row["tipo"] for row in (tbl_data or [])}
+    log = macro_log or []
+    if recording:
+        for k, v in new_map.items():
+            log = log + [f"SET_MANAGEMENT {k} {v}"]
+        log = log + ["REAPPLY_MANAGEMENT"]
+    return new_map, "✓ Management actualizado", log
+
+# ── Grabación ─────────────────────────────────────────────────────────
+@app.callback(
+    Output("store-recording", "data"),
+    Output("btn-rec",         "children"),
+    Output("btn-rec",         "style"),
+    Output("rec-status",      "children"),
+    Output("rec-status",      "style"),
+    Output("store-macro-log", "data", allow_duplicate=True),
+    Input("btn-rec",          "n_clicks"),
+    State("store-recording",  "data"),
+    State("store-macro-log",  "data"),
+    prevent_initial_call=True,
+)
+def toggle_recording(n, recording, macro_log):
+    recording = not (recording or False)
+    log = macro_log or []
+    from datetime import datetime
+    ts = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    if recording:
+        log = log + [f"// Inicio grabación: {ts}"]
+        label_txt = "⏹ Detener grabación"
+        btn_style = {"padding": "6px 14px", "borderRadius": "4px",
+                     "border": f"1px solid {DANGER}", "background": SURFACE2,
+                     "color": DANGER, "cursor": "pointer",
+                     "fontFamily": FONT_MONO, "fontSize": "12px"}
+        status_txt   = "● Grabando..."
+        status_style = {"fontSize": "11px", "color": DANGER, "marginRight": "12px"}
+    else:
+        log = log + [f"// Fin grabación: {ts}"]
+        label_txt = "⏺ Iniciar grabación"
+        btn_style = {"padding": "6px 14px", "borderRadius": "4px",
+                     "border": f"1px solid {BORDER}", "background": SURFACE2,
+                     "color": TEXT, "cursor": "pointer",
+                     "fontFamily": FONT_MONO, "fontSize": "12px"}
+        status_txt   = "● Grabación inactiva"
+        status_style = {"fontSize": "11px", "color": MUTED, "marginRight": "12px"}
+    return recording, label_txt, btn_style, status_txt, status_style, log
+
+# ── Macro log display ─────────────────────────────────────────────────
+@app.callback(
+    Output("macro-log", "children"),
+    Input("store-macro-log", "data"),
+    Input("btn-clear-macro", "n_clicks"),
+)
+def update_macro_log(log, clear_n):
+    if ctx.triggered_id == "btn-clear-macro":
+        return "// Log limpiado\n"
+    return "\n".join(log or []) + "\n"
+
+# ── Exportar macro ────────────────────────────────────────────────────
+@app.callback(
+    Output("download-macro",     "data"),
+    Input("btn-export-macro",    "n_clicks"),
+    State("store-macro-log",     "data"),
+    prevent_initial_call=True,
+)
+def export_macro(n, log):
+    if not n: return no_update
+    content = "\n".join(log or [])
+    from datetime import datetime
+    fname = f"macro_inversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    return dict(content=content, filename=fname)
+
+# ── Ejecutar macro ────────────────────────────────────────────────────
+@app.callback(
+    Output("store-month",          "data", allow_duplicate=True),
+    Output("store-custom-cols",    "data", allow_duplicate=True),
+    Output("store-sum-rules",      "data", allow_duplicate=True),
+    Output("macro-exec-log-wrap",  "children"),
+    Output("macro-exec-log-wrap",  "style"),
+    Input("btn-run-macro",         "n_clicks"),
+    State("macro-input",           "value"),
+    State("store-custom-cols",     "data"),
+    State("store-sum-rules",       "data"),
+    State("store-month",           "data"),
+    prevent_initial_call=True,
+)
+def run_macro(n, code, custom_cols, sum_rules, current_month):
+    if not n or not code: return no_update, no_update, no_update, "", {"display": "none"}
+
+    lines = [l.strip() for l in code.split("\n")
+             if l.strip() and not l.strip().startswith("//")]
+    log_lines = []
+    errors = 0
+    new_month = current_month
+    new_custom = dict(custom_cols or {})
+    new_sums   = list(sum_rules or [])
+
+    def log(msg, ok=True):
+        nonlocal errors
+        log_lines.append(("✓ " if ok else "✗ ") + msg)
+        if not ok: errors += 1
+
+    for i, line in enumerate(lines, 1):
+        try:
+            parts = line.split(" ", 1)
+            cmd   = parts[0].upper()
+            rest  = parts[1] if len(parts) > 1 else ""
+
+            if cmd == "SELECT_MONTH":
+                m = rest.strip()
+                if m in DATASETS:
+                    new_month = m; log(f"Mes {m} seleccionado")
+                else:
+                    log(f"Mes '{m}' no encontrado en datasets disponibles: {list(DATASETS.keys())}", False)
+
+            elif cmd == "ADD_COLUMN":
+                name_m = re.match(r'^(\S+)', rest)
+                val_m  = re.search(r'VALUE (.+?) (ELSE|CONDITIONS|$)', rest)
+                else_m = re.search(r'ELSE (.+?) (CONDITIONS|$)', rest)
+                cond_m = re.search(r'CONDITIONS (.+)$', rest)
+                if name_m:
+                    name = name_m.group(1)
+                    new_custom[name] = {
+                        "value":      val_m.group(1).strip() if val_m else "",
+                        "else_val":   else_m.group(1).strip() if else_m else "",
+                        "conditions": json.loads(cond_m.group(1)) if cond_m else [],
+                    }
+                    log(f"Columna '{name}' creada")
+                else:
+                    log("ADD_COLUMN: nombre no válido", False)
+
+            elif cmd == "SUM":
+                sc_m  = re.search(r'col:(.+?) WHERE', rest)
+                wh_m  = re.search(r'WHERE col:(.+?)=(.+?) LABEL', rest)
+                lb_m  = re.search(r'LABEL (.+)$', rest)
+                if sc_m and wh_m:
+                    new_sums.append({
+                        "sum_col":    sc_m.group(1).strip(),
+                        "filter_col": wh_m.group(1).strip(),
+                        "filter_val": wh_m.group(2).strip(),
+                        "label":      lb_m.group(1).strip() if lb_m else wh_m.group(2).strip(),
+                    })
+                    log(f"Sumatoria agregada: {sc_m.group(1).strip()}")
+                else:
+                    log("SUM: sintaxis inválida. Usa: SUM col:X WHERE col:Y=Z LABEL L", False)
+
+            elif cmd == "REAPPLY_MANAGEMENT":
+                log("Management marcado para reaplicarse")
+
+            elif cmd == "CLEAR_SUMS":
+                new_sums = []; log("Sumatorias limpiadas")
+
+            else:
+                log(f"Comando desconocido en línea {i}: '{cmd}'", False)
+
+        except Exception as e:
+            log(f"Error en línea {i} ('{line[:40]}'): {e}", False)
+            errors += 1
+
+    summary = f"\n── {len(lines)} comandos · {errors} error(es) ──"
+    log_lines.append(summary)
+    log_content = html.Pre(
+        "\n".join(log_lines),
+        style={"background": BG, "border": f"1px solid {BORDER}",
+               "borderRadius": "4px", "padding": "12px",
+               "fontSize": "11px", "color": TEXT, "lineHeight": "1.9",
+               "maxHeight": "200px", "overflowY": "auto",
+               "fontFamily": FONT_MONO, "whiteSpace": "pre-wrap"},
+    )
+    wrap_style = {"display": "block", "marginTop": "12px"}
+    return new_month, new_custom, new_sums, log_content, wrap_style
+
+@app.callback(
+    Output("macro-input", "value"),
+    Input("btn-clear-macro-input", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_macro_input(n):
+    return "" if n else no_update
+
+# ══════════════════════════════════════════════════════════════════════
+#  ARRANQUE
+# ══════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    def open_browser():
+        import time; time.sleep(1.5)
+        webbrowser.open("http://127.0.0.1:8050")
+    threading.Thread(target=open_browser, daemon=True).start()
+    print("\n══ Dashboard corriendo en http://127.0.0.1:8050 ══")
+    print("   Presiona Ctrl+C para detener\n")
+    app.run(debug=False, port=8050)
