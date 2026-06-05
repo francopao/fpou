@@ -1311,7 +1311,8 @@ if __name__ == "__main__":
         _base_dir = os.getcwd()  # En Jupyter usa el directorio del kernel
 
     output_html = os.path.join(_base_dir, "investment_dashboard.html")
-    if len(sys.argv) > 1:
+    # Jupyter pasa argumentos propios como "-f kernel.json"; ignorarlos
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
         output_html = sys.argv[1]
 
     print(f"Output: {output_html}\n")
