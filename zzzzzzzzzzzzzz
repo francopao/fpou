@@ -1,0 +1,1329 @@
+#!/usr/bin/env python3
+"""
+AFP Integra - Investment Thematic Dashboard Generator
+Reads Inversión Temática .xlsm and G&P_MLab.xlsm, then generates
+an interactive HTML dashboard with macro recording capabilities.
+"""
+
+import os, re, json, glob, sys
+from datetime import date, timedelta
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+# ─── CONFIG ────────────────────────────────────────────────────────────────────
+INVERSION_DIR = r"Z:\Mesa de Inversiones\Bottom-Up\2 Proceso de Inversión Renta Fija\Corporates - Emisiones\Crédito - BU\3. ESG\56. Nuevo Modelo Comité ASG\Excel Inversion Tematica"
+BENCHMARKING_FILE = r"Z:\Benchmarking\G&P_MLab.xlsm"
+SHEET_VALORIZACION = "Valorización de Instrumentos"
+SHEET_DETALLADO = "Detallado"
+
+# Columns to extract from Detallado (D,E,F,G,H,I,J,K,M,S,V → 0-indexed: 3,4,5,6,7,8,9,10,12,18,21)
+DETALLADO_COLS = [3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 21]
+
+# Management mapping (first 2 chars of col B from Valorización)
+MANAGEMENT_MAP = {
+    "01":"Internally managed","08":"Internally managed","12":"Internally managed",
+    "15":"Internally managed","18":"Internally managed","21":"Internally managed",
+    "22":"Internally managed","23":"Internally managed","25":"Internally managed",
+    "27":"Internally managed","30":"Internally managed","31":"Internally managed",
+    "32":"Internally managed","34":"Internally managed","39":"Internally managed",
+    "43":"Internally managed","48":"Externally managed","49":"Externally managed",
+    "50":"Externally managed","51":"Externally managed","52":"Externally managed",
+    "53":"Externally managed","54":"Externally managed","59":"Internally managed",
+    "60":"Internally managed","63":"Internally managed","6B":"Internally managed",
+    "81":"Internally managed",
+}
+
+# Peruvian public holidays (fixed + moveable approximations)
+PERU_HOLIDAYS = {
+    (1, 1), (5, 1), (6, 29), (7, 28), (7, 29),
+    (8, 30), (10, 8), (11, 1), (12, 8), (12, 25),
+    # Semana Santa approximations added dynamically
+}
+
+def get_easter(year):
+    """Gauss algorithm for Easter Sunday."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19*a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2*e + 2*i - h - k) % 7
+    m = (a + 11*h + 22*l) // 451
+    month = (h + l - 7*m + 114) // 31
+    day = ((h + l - 7*m + 114) % 31) + 1
+    return date(year, month, day)
+
+def peru_holidays_for_year(year):
+    easter = get_easter(year)
+    holidays = set()
+    for mo, da in PERU_HOLIDAYS:
+        try:
+            holidays.add(date(year, mo, da))
+        except ValueError:
+            pass
+    # Jueves y Viernes Santo
+    holidays.add(easter - timedelta(days=3))
+    holidays.add(easter - timedelta(days=2))
+    return holidays
+
+def is_business_day(d: date) -> bool:
+    if d.weekday() >= 5:
+        return False
+    holidays = peru_holidays_for_year(d.year)
+    return d not in holidays
+
+def last_business_day_of_month(year: int, month: int) -> date:
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    last = next_month - timedelta(days=1)
+    while not is_business_day(last):
+        last -= timedelta(days=1)
+    return last
+
+def get_last_12_month_ends(ref_date: date = None) -> list:
+    """Returns list of (year,month) for last 12 months ending at previous month."""
+    if ref_date is None:
+        ref_date = date.today()
+    results = []
+    m = ref_date.month - 1
+    y = ref_date.year
+    if m == 0:
+        m = 12
+        y -= 1
+    for _ in range(12):
+        results.append(last_business_day_of_month(y, m))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+    return list(reversed(results))
+
+def find_latest_inversion_file(directory: str) -> str:
+    pattern = os.path.join(directory, "Inves*ón Tematica*.xlsm")
+    files = glob.glob(pattern)
+    if not files:
+        pattern = os.path.join(directory, "*.xlsm")
+        files = glob.glob(pattern)
+    if not files:
+        raise FileNotFoundError(f"No .xlsm found in {directory}")
+    def extract_date(f):
+        name = os.path.basename(f)
+        match = re.search(r'(\d{6})', name)
+        if match:
+            mmyyyy = match.group(1)
+            try:
+                return date(int(mmyyyy[2:]), int(mmyyyy[:2]), 1)
+            except:
+                pass
+        return date.min
+    return max(files, key=extract_date)
+
+def read_valorizacion(filepath: str, target_date: date) -> pd.DataFrame:
+    """
+    Read Valorización de Instrumentos sheet.
+    Tries to edit B1 with the date, then reads B:AS from row 3.
+    Since we can't truly trigger queries, we read data_only.
+    """
+    try:
+        # Try with openpyxl keeping_vba to handle xlsm
+        from openpyxl import load_workbook
+        wb = load_workbook(filepath, read_only=False, keep_vba=True, data_only=False)
+        if SHEET_VALORIZACION not in wb.sheetnames:
+            raise ValueError(f"Sheet '{SHEET_VALORIZACION}' not found")
+        ws = wb[SHEET_VALORIZACION]
+        # Write the date into B1 as yyyymmdd integer
+        date_val = int(target_date.strftime("%Y%m%d"))
+        ws["B1"] = date_val
+        wb.save(filepath)
+        wb.close()
+    except Exception as e:
+        print(f"  [WARN] Could not write B1: {e}")
+
+    try:
+        df = pd.read_excel(
+            filepath,
+            sheet_name=SHEET_VALORIZACION,
+            header=2,           # row 3 (0-indexed: 2)
+            engine="openpyxl",
+            usecols="B:AS",
+        )
+        # Drop fully empty rows
+        df = df.dropna(how="all")
+        df["_source_date"] = target_date
+        return df
+    except Exception as e:
+        print(f"  [ERROR] Could not read Valorización: {e}")
+        return pd.DataFrame()
+
+def read_detallado(benchmarking_path: str) -> pd.DataFrame:
+    """Read Detallado sheet entirely."""
+    try:
+        df = pd.read_excel(
+            benchmarking_path,
+            sheet_name=SHEET_DETALLADO,
+            header=0,
+            engine="openpyxl",
+        )
+        return df
+    except Exception as e:
+        print(f"  [ERROR] Could not read Detallado: {e}")
+        return pd.DataFrame()
+
+def merge_with_detallado(val_df: pd.DataFrame, det_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Match col H of val_df against col B of det_df.
+    Attach cols D,E,F,G,H,I,J,K,M,S,V from det_df.
+    """
+    if val_df.empty or det_df.empty:
+        return val_df
+
+    # det_df column names by position
+    det_cols = det_df.columns.tolist()
+    def safe_col(idx):
+        return det_cols[idx] if idx < len(det_cols) else None
+
+    selected_det_cols = [safe_col(i) for i in DETALLADO_COLS if safe_col(i)]
+    col_b_det = safe_col(1)   # column B (index 1)
+
+    if col_b_det is None:
+        return val_df
+
+    # val col H: 7th column (0-indexed: 6) in B:AS slice → col index 6
+    val_cols = val_df.columns.tolist()
+    val_col_h = val_cols[6] if len(val_cols) > 6 else None
+
+    if val_col_h is None:
+        return val_df
+
+    # Build lookup dict from detallado: B → row
+    det_lookup = det_df.set_index(col_b_det)
+
+    added_cols = {}
+    for sc in selected_det_cols:
+        if sc in det_lookup.columns:
+            added_cols[f"DET_{sc}"] = val_df[val_col_h].map(
+                lambda x: det_lookup[sc].get(x, np.nan)
+            )
+
+    for col_name, series in added_cols.items():
+        val_df[col_name] = series.values
+
+    return val_df
+
+def add_management_col(df: pd.DataFrame) -> pd.DataFrame:
+    val_cols = [c for c in df.columns if not c.startswith("DET_") and c != "_source_date"]
+    col_b = val_cols[0] if val_cols else None
+    if col_b:
+        df["Management"] = df[col_b].astype(str).str[:2].str.upper().map(MANAGEMENT_MAP).fillna("Unknown")
+    return df
+
+def build_datasets() -> dict:
+    """Main pipeline: returns dict of {label: dataframe}."""
+    print("=== AFP Integra - Inversión Temática Pipeline ===\n")
+
+    print("1. Locating latest Inversión Temática file...")
+    try:
+        inv_file = find_latest_inversion_file(INVERSION_DIR)
+        print(f"   Found: {os.path.basename(inv_file)}")
+    except FileNotFoundError as e:
+        print(f"   [FATAL] {e}")
+        return {}
+
+    print("\n2. Computing last 12 month-end business days...")
+    month_ends = get_last_12_month_ends()
+    for d in month_ends:
+        print(f"   {d.strftime('%B %Y')}: {d.strftime('%d/%m/%Y')}")
+
+    print("\n3. Reading Detallado from G&P_MLab.xlsm...")
+    try:
+        det_df = read_detallado(BENCHMARKING_FILE)
+        print(f"   Loaded {len(det_df)} rows, {len(det_df.columns)} cols")
+    except Exception as e:
+        print(f"   [ERROR] {e}")
+        det_df = pd.DataFrame()
+
+    datasets = {}
+    print("\n4. Reading Valorización for each month-end...")
+    for target_date in month_ends:
+        label = target_date.strftime("%m/%Y")
+        print(f"   Processing {label} ({target_date.strftime('%Y%m%d')})...")
+        df = read_valorizacion(inv_file, target_date)
+        if not df.empty:
+            df = merge_with_detallado(df, det_df)
+            df = add_management_col(df)
+            datasets[label] = df
+            print(f"   ✓ {len(df)} rows loaded")
+        else:
+            print(f"   ✗ Empty dataset for {label}")
+
+    print(f"\n✓ Pipeline complete: {len(datasets)} datasets loaded")
+    return datasets
+
+def serialize_datasets(datasets: dict) -> dict:
+    """Convert datasets to JSON-serializable format."""
+    result = {}
+    for label, df in datasets.items():
+        # Convert to records, handle NaN and dates
+        records = df.where(pd.notnull(df), None).astype(object)
+        result[label] = {
+            "columns": list(df.columns),
+            "records": records.values.tolist(),
+        }
+    return result
+
+def generate_html(datasets: dict, output_path: str):
+    """Generate the full HTML dashboard."""
+    data_json = json.dumps(serialize_datasets(datasets), ensure_ascii=False, default=str)
+    management_map_json = json.dumps(MANAGEMENT_MAP, ensure_ascii=False)
+
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AFP Integra · Inversión Temática</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,700;1,9..144,400&display=swap" rel="stylesheet"/>
+<style>
+:root{{
+  --bg:#0a0c10;
+  --surface:#111318;
+  --surface2:#181b22;
+  --border:#252933;
+  --accent:#c8a96e;
+  --accent2:#6ec8a9;
+  --accent3:#6e9ac8;
+  --danger:#c86e6e;
+  --text:#e8e2d6;
+  --muted:#7a7870;
+  --mono:'DM Mono',monospace;
+  --serif:'Fraunces',serif;
+}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;min-height:100vh;overflow-x:hidden}}
+::selection{{background:var(--accent);color:#000}}
+
+/* SCROLLBAR */
+::-webkit-scrollbar{{width:6px;height:6px}}
+::-webkit-scrollbar-track{{background:var(--bg)}}
+::-webkit-scrollbar-thumb{{background:var(--border);border-radius:3px}}
+
+/* HEADER */
+.header{{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:18px 32px;border-bottom:1px solid var(--border);
+  background:var(--surface);position:sticky;top:0;z-index:100;
+}}
+.header-logo{{font-family:var(--serif);font-size:20px;font-weight:700;color:var(--accent);letter-spacing:-0.5px}}
+.header-logo span{{color:var(--muted);font-weight:300;font-style:italic}}
+.header-right{{display:flex;gap:12px;align-items:center}}
+.rec-btn{{
+  display:flex;align-items:center;gap:6px;padding:6px 14px;
+  border-radius:4px;border:1px solid var(--border);background:var(--surface2);
+  color:var(--text);cursor:pointer;font-family:var(--mono);font-size:12px;
+  transition:all .2s;
+}}
+.rec-btn:hover{{border-color:var(--accent)}}
+.rec-btn.recording{{border-color:var(--danger);color:var(--danger)}}
+.rec-dot{{width:7px;height:7px;border-radius:50%;background:var(--muted)}}
+.rec-btn.recording .rec-dot{{background:var(--danger);animation:pulse 1s infinite}}
+@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}
+
+/* LAYOUT */
+.layout{{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 57px)}}
+.sidebar{{background:var(--surface);border-right:1px solid var(--border);padding:20px 0;overflow-y:auto}}
+.main{{overflow:auto;padding:24px 28px}}
+
+/* SIDEBAR */
+.sidebar-section{{padding:0 20px 20px}}
+.sidebar-label{{font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border)}}
+.month-btn{{
+  display:block;width:100%;text-align:left;padding:8px 12px;
+  background:transparent;border:1px solid transparent;border-radius:4px;
+  color:var(--muted);cursor:pointer;font-family:var(--mono);font-size:12px;
+  transition:all .15s;margin-bottom:2px;
+}}
+.month-btn:hover{{color:var(--text);border-color:var(--border)}}
+.month-btn.active{{color:var(--accent);border-color:var(--accent);background:rgba(200,169,110,.06)}}
+.row-count{{float:right;font-size:10px;color:var(--muted)}}
+
+/* TABS */
+.tabs{{display:flex;gap:2px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:0}}
+.tab{{
+  padding:8px 18px;cursor:pointer;color:var(--muted);font-size:12px;
+  border-bottom:2px solid transparent;transition:all .15s;margin-bottom:-1px;
+}}
+.tab:hover{{color:var(--text)}}
+.tab.active{{color:var(--accent);border-bottom-color:var(--accent)}}
+
+/* PANEL */
+.panel{{display:none}}.panel.active{{display:block}}
+
+/* TOOLBAR */
+.toolbar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}}
+.btn{{
+  padding:6px 14px;border-radius:4px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);cursor:pointer;
+  font-family:var(--mono);font-size:12px;transition:all .2s;
+}}
+.btn:hover{{border-color:var(--accent);color:var(--accent)}}
+.btn.primary{{background:var(--accent);color:#000;border-color:var(--accent)}}
+.btn.primary:hover{{background:#d4b87a}}
+.btn.danger{{border-color:var(--danger);color:var(--danger)}}
+.search-input{{
+  padding:6px 12px;border:1px solid var(--border);border-radius:4px;
+  background:var(--surface2);color:var(--text);font-family:var(--mono);
+  font-size:12px;width:220px;outline:none;transition:border .2s;
+}}
+.search-input:focus{{border-color:var(--accent)}}
+
+/* COL PICKER */
+.col-picker{{
+  background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  padding:14px;margin-bottom:16px;display:none;
+}}
+.col-picker.open{{display:block}}
+.col-picker-title{{font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:10px}}
+.col-tags{{display:flex;flex-wrap:wrap;gap:6px}}
+.col-tag{{
+  padding:4px 10px;border-radius:3px;border:1px solid var(--border);
+  background:var(--surface);color:var(--muted);cursor:pointer;font-size:11px;
+  transition:all .15s;user-select:none;
+}}
+.col-tag:hover{{border-color:var(--accent)}}
+.col-tag.on{{background:rgba(200,169,110,.15);border-color:var(--accent);color:var(--accent)}}
+.col-tag.locked{{border-color:var(--accent2);color:var(--accent2);cursor:default}}
+
+/* DATA TABLE */
+.table-wrap{{overflow:auto;border-radius:6px;border:1px solid var(--border)}}
+table{{border-collapse:collapse;width:100%;min-width:600px}}
+thead th{{
+  background:var(--surface);padding:9px 12px;text-align:left;
+  font-size:11px;color:var(--muted);letter-spacing:.5px;white-space:nowrap;
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10;
+  cursor:pointer;user-select:none;
+}}
+thead th:hover{{color:var(--text)}}
+thead th.asc::after{{content:" ↑";color:var(--accent)}}
+thead th.desc::after{{content:" ↓";color:var(--accent)}}
+tbody tr{{border-bottom:1px solid rgba(37,41,51,.7);transition:background .1s}}
+tbody tr:hover{{background:var(--surface)}}
+tbody td{{padding:7px 12px;white-space:nowrap;font-size:12px}}
+.badge{{
+  display:inline-block;padding:2px 8px;border-radius:2px;font-size:10px;
+}}
+.badge-int{{background:rgba(110,201,169,.12);color:var(--accent2)}}
+.badge-ext{{background:rgba(200,169,110,.12);color:var(--accent)}}
+.pagination{{display:flex;align-items:center;gap:8px;margin-top:14px;color:var(--muted);font-size:12px}}
+.page-btn{{padding:4px 10px;border-radius:3px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer}}
+.page-btn:hover{{border-color:var(--accent);color:var(--accent)}}
+.page-btn:disabled{{opacity:.3;cursor:default}}
+
+/* FORMS / MODALS */
+.card{{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:18px;margin-bottom:16px}}
+.card-title{{font-family:var(--serif);font-size:16px;color:var(--accent);margin-bottom:14px;font-weight:300}}
+.form-row{{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px}}
+.form-group{{display:flex;flex-direction:column;gap:4px}}
+.form-label{{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}}
+.form-input,.form-select{{
+  padding:6px 10px;border:1px solid var(--border);border-radius:4px;
+  background:var(--surface);color:var(--text);font-family:var(--mono);
+  font-size:12px;outline:none;transition:border .2s;min-width:140px;
+}}
+.form-input:focus,.form-select:focus{{border-color:var(--accent)}}
+.form-select option{{background:var(--surface)}}
+.conditions-list{{display:flex;flex-direction:column;gap:6px;margin:10px 0}}
+.condition-row{{display:flex;gap:8px;align-items:center}}
+.remove-cond{{background:transparent;border:none;color:var(--danger);cursor:pointer;font-size:16px;line-height:1}}
+
+/* MANAGEMENT MAP */
+.mgmt-table{{width:100%;border-collapse:collapse}}
+.mgmt-table td,.mgmt-table th{{
+  padding:5px 10px;border:1px solid var(--border);font-size:12px;
+}}
+.mgmt-table th{{background:var(--surface);color:var(--muted)}}
+.mgmt-editable{{background:transparent;border:none;color:var(--text);font-family:var(--mono);font-size:12px;width:100%;outline:none;}}
+
+/* SUMMATION BUILDER */
+.sum-table{{border-collapse:collapse;width:100%}}
+.sum-table th,.sum-table td{{padding:8px 12px;border:1px solid var(--border);font-size:12px}}
+.sum-table th{{background:var(--surface);color:var(--muted)}}
+.sum-row-total td{{font-weight:700;color:var(--accent);background:rgba(200,169,110,.05)}}
+
+/* MACRO PANEL */
+.macro-log{{
+  background:var(--bg);border:1px solid var(--border);border-radius:4px;
+  padding:14px;font-size:11px;color:var(--accent2);line-height:1.8;
+  max-height:240px;overflow-y:auto;font-family:var(--mono);white-space:pre-wrap;
+}}
+.macro-input-area{{
+  width:100%;height:140px;background:var(--bg);border:1px solid var(--border);
+  border-radius:4px;padding:12px;color:var(--text);font-family:var(--mono);
+  font-size:12px;resize:vertical;outline:none;
+}}
+.macro-input-area:focus{{border-color:var(--accent)}}
+
+/* TOAST */
+.toast{{
+  position:fixed;bottom:24px;right:24px;padding:10px 18px;
+  background:var(--surface2);border:1px solid var(--accent);border-radius:4px;
+  color:var(--text);font-size:12px;z-index:9999;transition:opacity .3s;
+  pointer-events:none;
+}}
+.toast.hidden{{opacity:0}}
+
+/* EMPTY STATE */
+.empty-state{{text-align:center;padding:60px 20px;color:var(--muted)}}
+.empty-state-icon{{font-size:40px;margin-bottom:12px}}
+.empty-state-text{{font-family:var(--serif);font-size:18px;font-weight:300;color:var(--muted)}}
+
+/* UNIQUE VALUES POPOVER */
+.uv-popover{{
+  position:absolute;background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;padding:10px;z-index:50;max-height:200px;overflow-y:auto;
+  min-width:180px;font-size:12px;box-shadow:0 8px 30px rgba(0,0,0,.5);
+}}
+.uv-item{{padding:4px 8px;cursor:pointer;border-radius:3px;}}
+.uv-item:hover{{background:var(--border)}}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-logo">AFP Integra <span>· Inversión Temática</span></div>
+  <div class="header-right">
+    <span id="rec-status" style="font-size:11px;color:var(--muted)">Grabación inactiva</span>
+    <button class="rec-btn" id="rec-btn" onclick="toggleRecording()">
+      <span class="rec-dot" id="rec-dot"></span>
+      <span id="rec-label">Iniciar grabación</span>
+    </button>
+  </div>
+</div>
+
+<!-- LAYOUT -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Mes seleccionado</div>
+      <div id="month-list"></div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main">
+    <div id="no-month" class="empty-state">
+      <div class="empty-state-icon">◈</div>
+      <div class="empty-state-text">Selecciona un mes para comenzar</div>
+    </div>
+
+    <div id="workspace" style="display:none">
+
+      <!-- TABS -->
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('data')">Datos</div>
+        <div class="tab" onclick="switchTab('columns')">Columnas personalizadas</div>
+        <div class="tab" onclick="switchTab('sumatorias')">Sumatorias</div>
+        <div class="tab" onclick="switchTab('management')">Mapa Management</div>
+        <div class="tab" onclick="switchTab('macro')">Macro</div>
+      </div>
+
+      <!-- ── TAB: DATA ── -->
+      <div class="panel active" id="panel-data">
+        <div class="toolbar">
+          <button class="btn" onclick="toggleColPicker()">Columnas visibles</button>
+          <input class="search-input" id="search-input" placeholder="Buscar en tabla..." oninput="applyFilters()"/>
+          <button class="btn" onclick="exportCSV()">Exportar CSV</button>
+          <span id="row-info" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
+        </div>
+        <div class="col-picker" id="col-picker">
+          <div class="col-picker-title">Columnas visibles · arrastra para reordenar</div>
+          <div class="col-tags" id="col-tags"></div>
+        </div>
+        <div class="table-wrap" id="table-wrap">
+          <table id="main-table">
+            <thead id="main-thead"></thead>
+            <tbody id="main-tbody"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button class="page-btn" id="prev-btn" onclick="changePage(-1)">← Ant</button>
+          <span id="page-info"></span>
+          <button class="page-btn" id="next-btn" onclick="changePage(1)">Sig →</button>
+          <select class="form-select" style="width:auto;min-width:80px" onchange="changePageSize(this.value)">
+            <option value="50">50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option>
+          </select>
+          <span style="color:var(--muted)">filas/página</span>
+        </div>
+      </div>
+
+      <!-- ── TAB: CUSTOM COLUMNS ── -->
+      <div class="panel" id="panel-columns">
+        <div class="card">
+          <div class="card-title">Nueva columna condicional</div>
+          <div class="form-row">
+            <div class="form-group">
+              <div class="form-label">Nombre de columna</div>
+              <input class="form-input" id="new-col-name" placeholder="Ej: Asset class 100"/>
+            </div>
+            <div class="form-group">
+              <div class="form-label">Valor resultante</div>
+              <input class="form-input" id="new-col-value" placeholder="Ej: FI - Corpo"/>
+            </div>
+          </div>
+          <div class="form-label" style="margin-bottom:8px">Condiciones (AND)</div>
+          <div class="conditions-list" id="conditions-list"></div>
+          <div class="form-row" style="margin-top:8px">
+            <button class="btn" onclick="addCondition()">+ Condición</button>
+            <div class="form-group">
+              <div class="form-label">Valor si no cumple condición</div>
+              <input class="form-input" id="new-col-else" placeholder="(dejar vacío = blanco)"/>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px">
+            <button class="btn primary" onclick="applyCustomColumn()">Aplicar columna</button>
+            <button class="btn" onclick="previewUniqueValues()">Ver valores únicos de columna...</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Columnas creadas</div>
+          <div id="custom-cols-list" style="color:var(--muted);font-size:12px">
+            Aún no se han creado columnas personalizadas.
+          </div>
+        </div>
+      </div>
+
+      <!-- ── TAB: SUMATORIAS ── -->
+      <div class="panel" id="panel-sumatorias">
+        <div class="card">
+          <div class="card-title">Crear sumatoria condicional</div>
+          <div class="form-row">
+            <div class="form-group">
+              <div class="form-label">Columna a sumar</div>
+              <select class="form-select" id="sum-col"></select>
+            </div>
+            <div class="form-group">
+              <div class="form-label">Filtrar donde columna</div>
+              <select class="form-select" id="sum-filter-col"></select>
+            </div>
+            <div class="form-group">
+              <div class="form-label">Sea igual a</div>
+              <input class="form-input" id="sum-filter-val" placeholder="Valor"/>
+            </div>
+            <div class="form-group">
+              <div class="form-label">Etiqueta en tabla</div>
+              <input class="form-input" id="sum-label" placeholder="Ej: Listed Equity"/>
+            </div>
+          </div>
+          <button class="btn primary" onclick="addSumRule()">Agregar sumatoria</button>
+        </div>
+
+        <div class="card" id="sum-results-card" style="display:none">
+          <div class="card-title">Tabla de resultados</div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group">
+              <div class="form-label">Header col. categoría</div>
+              <input class="form-input" id="sum-header-cat" value="Categoría" oninput="renderSumTable()"/>
+            </div>
+            <div class="form-group">
+              <div class="form-label">Header col. sumatoria</div>
+              <input class="form-input" id="sum-header-val" value="Sumatoria" oninput="renderSumTable()"/>
+            </div>
+            <div class="form-group" style="justify-content:flex-end;padding-top:18px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+                <input type="checkbox" id="sum-show-total" onchange="renderSumTable()"/> Agregar fila total
+              </label>
+            </div>
+          </div>
+          <div id="sum-table-wrap"></div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn" onclick="clearSumRules()">Limpiar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── TAB: MANAGEMENT MAP ── -->
+      <div class="panel" id="panel-management">
+        <div class="card">
+          <div class="card-title">Tabla de equivalencias — Management</div>
+          <p style="color:var(--muted);font-size:12px;margin-bottom:14px">
+            Los primeros 2 dígitos de la columna B de Valorización se mapean al tipo de gestión. Edita directamente.
+          </p>
+          <table class="mgmt-table" id="mgmt-table">
+            <thead><tr><th>Código (2 dígitos)</th><th>Tipo de gestión</th></tr></thead>
+            <tbody id="mgmt-tbody"></tbody>
+          </table>
+          <button class="btn primary" style="margin-top:14px" onclick="reapplyManagement()">Reaplicar management a datos</button>
+        </div>
+      </div>
+
+      <!-- ── TAB: MACRO ── -->
+      <div class="panel" id="panel-macro">
+        <div class="card">
+          <div class="card-title">Código de macro grabado</div>
+          <div class="macro-log" id="macro-log">// La grabación iniciará al presionar "Iniciar grabación"&#10;</div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn primary" onclick="exportMacro()">Exportar .txt</button>
+            <button class="btn" onclick="clearMacroLog()">Limpiar log</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Ejecutar macro</div>
+          <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Pega o escribe un código de macro previamente exportado:</p>
+          <textarea class="macro-input-area" id="macro-input" placeholder="// Pega tu código de macro aquí...&#10;SELECT_MONTH 05/2026&#10;SHOW_COLS B,D,Management&#10;ADD_COLUMN Asset_class IF col:D=Fixed Income AND col:S=Corporate THEN FI-Corpo ELSE Other&#10;SUM col:Y WHERE col:Z=Listed Equity LABEL Listed_Equity&#10;"></textarea>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn primary" onclick="runMacro()">Ejecutar macro</button>
+            <button class="btn" onclick="document.getElementById('macro-input').value=''">Limpiar</button>
+          </div>
+          <div id="macro-run-log" style="margin-top:10px;display:none">
+            <div class="form-label" style="margin-bottom:6px">Log de ejecución</div>
+            <div class="macro-log" id="macro-exec-log"></div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /workspace -->
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<div class="toast hidden" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  DATA
+// ═══════════════════════════════════════════════════════
+const RAW_DATA = {data_json};
+const MANAGEMENT_MAP = {management_map_json};
+
+let currentMonth = null;
+let currentData = [];        // working rows (all)
+let filteredData = [];       // after search filter
+let displayCols = [];        // column keys to show
+let allCols = [];            // all available cols
+let customCols = {{}};        // col_name -> function(row) -> value
+let sumRules = [];
+let sortCol = null, sortDir = 1;
+let page = 0, pageSize = 50;
+let isRecording = false;
+let macroLog = [];
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {{
+  buildSidebar();
+  buildMgmtTable();
+}});
+
+function buildSidebar() {{
+  const list = document.getElementById('month-list');
+  list.innerHTML = '';
+  const months = Object.keys(RAW_DATA);
+  if (months.length === 0) {{
+    list.innerHTML = '<div style="color:var(--danger);font-size:11px;padding:8px">Sin datos disponibles.<br>Verifica las rutas de archivos.</div>';
+    return;
+  }}
+  months.forEach(m => {{
+    const rows = RAW_DATA[m].records.length;
+    const btn = document.createElement('button');
+    btn.className = 'month-btn';
+    btn.dataset.month = m;
+    btn.innerHTML = `${{m}} <span class="row-count">${{rows}}</span>`;
+    btn.onclick = () => selectMonth(m);
+    list.appendChild(btn);
+  }});
+}}
+
+function selectMonth(m) {{
+  record(`SELECT_MONTH ${{m}}`);
+  currentMonth = m;
+  document.querySelectorAll('.month-btn').forEach(b => b.classList.toggle('active', b.dataset.month === m));
+  const ds = RAW_DATA[m];
+  allCols = ds.columns;
+  currentData = ds.records.map(r => {{
+    const obj = {{}};
+    allCols.forEach((c, i) => obj[c] = r[i]);
+    return obj;
+  }});
+  // Re-apply custom cols
+  Object.entries(customCols).forEach(([name, fn]) => {{
+    currentData.forEach(row => row[name] = fn(row));
+  }});
+  // Default visible: first 2 mandatory + first 10 others
+  const mandatoryB = allCols[0];
+  const mandatoryD = allCols.find(c => c.startsWith('DET_')) || allCols[1];
+  const defaults = [mandatoryB, mandatoryD, ...allCols.filter(c => c !== mandatoryB && c !== mandatoryD).slice(0, 10)];
+  displayCols = [...new Set(defaults)];
+  document.getElementById('no-month').style.display = 'none';
+  document.getElementById('workspace').style.display = 'block';
+  renderColPicker();
+  populateSumSelects();
+  applyFilters();
+  toast(`Mes ${{m}} cargado — ${{currentData.length}} filas`);
+}}
+
+// ═══════════════════════════════════════════════════════
+//  TABS
+// ═══════════════════════════════════════════════════════
+function switchTab(name) {{
+  document.querySelectorAll('.tab').forEach((t,i) => {{
+    const names = ['data','columns','sumatorias','management','macro'];
+    t.classList.toggle('active', names[i] === name);
+  }});
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(`panel-${{name}}`).classList.add('active');
+}}
+
+// ═══════════════════════════════════════════════════════
+//  COL PICKER
+// ═══════════════════════════════════════════════════════
+function toggleColPicker() {{
+  document.getElementById('col-picker').classList.toggle('open');
+}}
+
+function renderColPicker() {{
+  const container = document.getElementById('col-tags');
+  container.innerHTML = '';
+  const locked = [allCols[0], allCols.find(c => c.startsWith('DET_'))].filter(Boolean);
+  const effectiveCols = [...allCols, ...Object.keys(customCols)];
+  effectiveCols.forEach(col => {{
+    const isLocked = locked.includes(col);
+    const isOn = displayCols.includes(col);
+    const tag = document.createElement('span');
+    tag.className = 'col-tag' + (isLocked ? ' locked' : (isOn ? ' on' : ''));
+    tag.textContent = col;
+    tag.title = col;
+    if (!isLocked) {{
+      tag.onclick = () => {{
+        if (displayCols.includes(col)) {{
+          displayCols = displayCols.filter(c => c !== col);
+          tag.classList.remove('on');
+          record(`HIDE_COL ${{col}}`);
+        }} else {{
+          displayCols.push(col);
+          tag.classList.add('on');
+          record(`SHOW_COL ${{col}}`);
+        }}
+        renderTable();
+      }};
+    }}
+    container.appendChild(tag);
+  }});
+}}
+
+// ═══════════════════════════════════════════════════════
+//  TABLE
+// ═══════════════════════════════════════════════════════
+function applyFilters() {{
+  const q = (document.getElementById('search-input')?.value || '').toLowerCase();
+  filteredData = currentData.filter(row =>
+    !q || Object.values(row).some(v => String(v ?? '').toLowerCase().includes(q))
+  );
+  page = 0;
+  renderTable();
+}}
+
+function renderTable() {{
+  const visibleCols = displayCols.filter(c => [...allCols, ...Object.keys(customCols)].includes(c));
+  const thead = document.getElementById('main-thead');
+  const tbody = document.getElementById('main-tbody');
+
+  // Sort
+  let data = [...filteredData];
+  if (sortCol !== null) {{
+    data.sort((a,b) => {{
+      const av = a[sortCol] ?? '', bv = b[sortCol] ?? '';
+      return sortDir * (av < bv ? -1 : av > bv ? 1 : 0);
+    }});
+  }}
+
+  // Paginate
+  const total = data.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  page = Math.min(page, totalPages - 1);
+  const start = page * pageSize;
+  const slice = data.slice(start, start + pageSize);
+
+  // Head
+  thead.innerHTML = '<tr>' + visibleCols.map(c => {{
+    const cls = sortCol === c ? (sortDir===1 ? 'asc':'desc') : '';
+    return `<th class="${{cls}}" onclick="sortBy('${{c}}')">${{c}}</th>`;
+  }}).join('') + '</tr>';
+
+  // Body
+  tbody.innerHTML = slice.map(row => {{
+    const cells = visibleCols.map(c => {{
+      const v = row[c];
+      if (c === 'Management') {{
+        const cls = v === 'Internally managed' ? 'badge-int' : 'badge-ext';
+        return `<td><span class="badge ${{cls}}">${{v ?? ''}}</span></td>`;
+      }}
+      return `<td>${{v ?? ''}}</td>`;
+    }}).join('');
+    return `<tr>${{cells}}</tr>`;
+  }}).join('');
+
+  // Pagination
+  document.getElementById('page-info').textContent = `Pág ${{page+1}} / ${{totalPages}}`;
+  document.getElementById('prev-btn').disabled = page === 0;
+  document.getElementById('next-btn').disabled = page >= totalPages - 1;
+  document.getElementById('row-info').textContent = `${{total.toLocaleString()}} filas`;
+}}
+
+function sortBy(col) {{
+  if (sortCol === col) sortDir = -sortDir;
+  else {{ sortCol = col; sortDir = 1; }}
+  record(`SORT_COL ${{col}} ${{sortDir===1?'ASC':'DESC'}}`);
+  renderTable();
+}}
+
+function changePage(dir) {{
+  page += dir;
+  renderTable();
+}}
+
+function changePageSize(v) {{
+  pageSize = parseInt(v);
+  page = 0;
+  renderTable();
+}}
+
+function exportCSV() {{
+  if (!currentMonth) return;
+  const visibleCols = displayCols;
+  const rows = [visibleCols.join(',')];
+  filteredData.forEach(row => {{
+    rows.push(visibleCols.map(c => JSON.stringify(row[c] ?? '')).join(','));
+  }});
+  const blob = new Blob([rows.join('\n')], {{type:'text/csv'}});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `inversion_tematica_${{currentMonth.replace('/','_')}}.csv`;
+  a.click();
+  record(`EXPORT_CSV ${{currentMonth}}`);
+  toast('CSV exportado');
+}}
+
+// ═══════════════════════════════════════════════════════
+//  CUSTOM COLUMNS
+// ═══════════════════════════════════════════════════════
+function addCondition() {{
+  const list = document.getElementById('conditions-list');
+  const colOpts = [...allCols, ...Object.keys(customCols)].map(c => `<option value="${{c}}">${{c}}</option>`).join('');
+  const div = document.createElement('div');
+  div.className = 'condition-row';
+  div.innerHTML = `
+    <select class="form-select cond-col">${{colOpts}}</select>
+    <select class="form-select cond-op" style="width:80px">
+      <option>=</option><option>!=</option><option>contains</option><option>starts_with</option><option>></option><option><</option>
+    </select>
+    <input class="form-input cond-val" placeholder="Valor" style="min-width:120px"/>
+    <span style="position:relative;display:inline-block">
+      <button class="btn" style="padding:4px 8px;font-size:10px" onclick="showUniqueValues(this)">Únicos</button>
+    </span>
+    <button class="remove-cond" onclick="this.closest('.condition-row').remove()">✕</button>
+  `;
+  list.appendChild(div);
+}}
+
+function showUniqueValues(btn) {{
+  if (!currentMonth) return;
+  const row = btn.closest('.condition-row');
+  const col = row.querySelector('.cond-col').value;
+  const vals = [...new Set(currentData.map(r => String(r[col] ?? '')))].sort().slice(0, 50);
+  let pop = document.querySelector('.uv-popover');
+  if (pop) pop.remove();
+  pop = document.createElement('div');
+  pop.className = 'uv-popover';
+  pop.style.top = btn.getBoundingClientRect().bottom + window.scrollY + 4 + 'px';
+  pop.style.left = btn.getBoundingClientRect().left + window.scrollX + 'px';
+  pop.innerHTML = vals.map(v => `<div class="uv-item" onclick="setCondVal(this,'${{v.replace(/'/g,"\\'")}}')">${{v}}</div>`).join('');
+  document.body.appendChild(pop);
+  document.addEventListener('click', () => pop.remove(), {{once:true, capture:true}});
+}}
+
+function setCondVal(el, v) {{
+  const row = el.closest('.condition-row') || document.querySelector('.conditions-list .condition-row:last-child');
+  if (row) row.querySelector('.cond-val').value = v;
+  el.closest('.uv-popover')?.remove();
+}}
+
+function previewUniqueValues() {{
+  if (!currentMonth) return;
+  const col = prompt('Ingresa el nombre de la columna:');
+  if (!col || !allCols.includes(col)) {{ toast('Columna no encontrada'); return; }}
+  const vals = [...new Set(currentData.map(r => String(r[col] ?? '')))].sort();
+  alert(`Valores únicos de "${{col}}":\n\n${{vals.slice(0,100).join('\n')}}${{vals.length>100?'\n... (truncado)':''}}`);
+}}
+
+function applyCustomColumn() {{
+  const name = document.getElementById('new-col-name').value.trim();
+  const value = document.getElementById('new-col-value').value.trim();
+  const elseVal = document.getElementById('new-col-else').value.trim();
+  if (!name) {{ toast('Ingresa nombre de columna'); return; }}
+
+  const conditions = [];
+  document.querySelectorAll('.condition-row').forEach(row => {{
+    conditions.push({{
+      col: row.querySelector('.cond-col').value,
+      op: row.querySelector('.cond-op').value,
+      val: row.querySelector('.cond-val').value,
+    }});
+  }});
+
+  const fn = (row) => {{
+    const match = conditions.every(c => {{
+      const rv = String(row[c.col] ?? '');
+      switch(c.op) {{
+        case '=': return rv === c.val;
+        case '!=': return rv !== c.val;
+        case 'contains': return rv.toLowerCase().includes(c.val.toLowerCase());
+        case 'starts_with': return rv.toLowerCase().startsWith(c.val.toLowerCase());
+        case '>': return parseFloat(rv) > parseFloat(c.val);
+        case '<': return parseFloat(rv) < parseFloat(c.val);
+        default: return false;
+      }}
+    }});
+    return match ? value : elseVal;
+  }};
+
+  customCols[name] = fn;
+  if (!allCols.includes(name)) allCols.push(name);
+  if (!displayCols.includes(name)) displayCols.push(name);
+  currentData.forEach(row => row[name] = fn(row));
+
+  const macroLine = `ADD_COLUMN ${{name}} VALUE "${{value}}" ELSE "${{elseVal}}" CONDITIONS ${{JSON.stringify(conditions)}}`;
+  record(macroLine);
+
+  renderColPicker();
+  applyFilters();
+  updateCustomColsList();
+  toast(`Columna "${{name}}" creada`);
+}}
+
+function updateCustomColsList() {{
+  const el = document.getElementById('custom-cols-list');
+  const names = Object.keys(customCols);
+  if (names.length === 0) {{
+    el.textContent = 'Aún no se han creado columnas personalizadas.';
+    return;
+  }}
+  el.innerHTML = names.map(n => `
+    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+      <span style="color:var(--accent)">${{n}}</span>
+      <button class="btn danger" style="padding:2px 8px;font-size:10px" onclick="removeCustomCol('${{n}}')">Eliminar</button>
+    </div>
+  `).join('');
+}}
+
+function removeCustomCol(name) {{
+  delete customCols[name];
+  allCols = allCols.filter(c => c !== name);
+  displayCols = displayCols.filter(c => c !== name);
+  currentData.forEach(row => delete row[name]);
+  record(`REMOVE_COLUMN ${{name}}`);
+  renderColPicker();
+  applyFilters();
+  updateCustomColsList();
+  toast(`Columna "${{name}}" eliminada`);
+}}
+
+// ═══════════════════════════════════════════════════════
+//  SUMATORIAS
+// ═══════════════════════════════════════════════════════
+function populateSumSelects() {{
+  const cols = [...allCols, ...Object.keys(customCols)];
+  ['sum-col','sum-filter-col'].forEach(id => {{
+    const sel = document.getElementById(id);
+    sel.innerHTML = cols.map(c => `<option value="${{c}}">${{c}}</option>`).join('');
+  }});
+}}
+
+function addSumRule() {{
+  const sumCol = document.getElementById('sum-col').value;
+  const filterCol = document.getElementById('sum-filter-col').value;
+  const filterVal = document.getElementById('sum-filter-val').value.trim();
+  const label = document.getElementById('sum-label').value.trim() || filterVal;
+  if (!filterVal) {{ toast('Ingresa un valor de filtro'); return; }}
+
+  sumRules.push({{sumCol, filterCol, filterVal, label}});
+  record(`SUM col:${{sumCol}} WHERE col:${{filterCol}}=${{filterVal}} LABEL ${{label}}`);
+  document.getElementById('sum-results-card').style.display = 'block';
+  renderSumTable();
+  toast('Sumatoria agregada');
+}}
+
+function renderSumTable() {{
+  const headerCat = document.getElementById('sum-header-cat').value;
+  const headerVal = document.getElementById('sum-header-val').value;
+  const showTotal = document.getElementById('sum-show-total').checked;
+
+  const rows = sumRules.map(rule => {{
+    const sum = currentData
+      .filter(r => String(r[rule.filterCol] ?? '') === rule.filterVal)
+      .reduce((acc, r) => acc + (parseFloat(r[rule.sumCol]) || 0), 0);
+    return {{label: rule.label, sum}};
+  }});
+
+  const total = rows.reduce((a,r) => a + r.sum, 0);
+  let html = `<table class="sum-table">
+    <thead><tr><th>${{headerCat}}</th><th>${{headerVal}}</th></tr></thead>
+    <tbody>
+    ${{rows.map(r => `<tr><td>${{r.label}}</td><td>${{r.sum.toLocaleString('es-PE', {{maximumFractionDigits:2}})}}</td></tr>`).join('')}}
+    ${{showTotal ? `<tr class="sum-row-total"><td>Total</td><td>${{total.toLocaleString('es-PE', {{maximumFractionDigits:2}})}}</td></tr>` : ''}}
+    </tbody></table>`;
+  document.getElementById('sum-table-wrap').innerHTML = html;
+}}
+
+function clearSumRules() {{
+  sumRules = [];
+  record('CLEAR_SUMS');
+  document.getElementById('sum-results-card').style.display = 'none';
+  document.getElementById('sum-table-wrap').innerHTML = '';
+}}
+
+// ═══════════════════════════════════════════════════════
+//  MANAGEMENT MAP
+// ═══════════════════════════════════════════════════════
+function buildMgmtTable() {{
+  const tbody = document.getElementById('mgmt-tbody');
+  tbody.innerHTML = Object.entries(MANAGEMENT_MAP).map(([code, val]) => `
+    <tr>
+      <td style="color:var(--accent2);font-family:var(--mono)">${{code}}</td>
+      <td><input class="mgmt-editable" data-code="${{code}}" value="${{val}}" onchange="updateMgmtMap(this)"/></td>
+    </tr>
+  `).join('');
+}}
+
+function updateMgmtMap(el) {{
+  MANAGEMENT_MAP[el.dataset.code] = el.value;
+  record(`SET_MANAGEMENT_MAP ${{el.dataset.code}} "${{el.value}}"`);
+}}
+
+function reapplyManagement() {{
+  if (!currentData.length) return;
+  const colB = allCols[0];
+  currentData.forEach(row => {{
+    const prefix = String(row[colB] ?? '').substring(0, 2).toUpperCase();
+    row['Management'] = MANAGEMENT_MAP[prefix] || 'Unknown';
+  }});
+  record('REAPPLY_MANAGEMENT');
+  applyFilters();
+  toast('Management reaplicado');
+}}
+
+// ═══════════════════════════════════════════════════════
+//  MACRO RECORDING
+// ═══════════════════════════════════════════════════════
+function toggleRecording() {{
+  isRecording = !isRecording;
+  const btn = document.getElementById('rec-btn');
+  const dot = document.getElementById('rec-dot');
+  const label = document.getElementById('rec-label');
+  const status = document.getElementById('rec-status');
+  btn.classList.toggle('recording', isRecording);
+  dot.style.background = isRecording ? 'var(--danger)' : 'var(--muted)';
+  label.textContent = isRecording ? 'Detener grabación' : 'Iniciar grabación';
+  status.textContent = isRecording ? '● Grabando...' : 'Grabación inactiva';
+  status.style.color = isRecording ? 'var(--danger)' : 'var(--muted)';
+  if (isRecording) {{
+    const ts = new Date().toLocaleString('es-PE');
+    appendMacroLog(`// Inicio de grabación: ${{ts}}`);
+  }} else {{
+    appendMacroLog(`// Fin de grabación: ${{new Date().toLocaleString('es-PE')}}`);
+    toast('Grabación detenida');
+  }}
+}}
+
+function record(line) {{
+  if (!isRecording) return;
+  macroLog.push(line);
+  appendMacroLog(line);
+}}
+
+function appendMacroLog(line) {{
+  const el = document.getElementById('macro-log');
+  el.textContent += line + '\n';
+  el.scrollTop = el.scrollHeight;
+}}
+
+function clearMacroLog() {{
+  macroLog = [];
+  document.getElementById('macro-log').textContent = '// Log limpiado\n';
+}}
+
+function exportMacro() {{
+  const content = macroLog.join('\n');
+  const blob = new Blob([content], {{type:'text/plain'}});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `macro_inversion_${{new Date().toISOString().slice(0,10)}}.txt`;
+  a.click();
+  toast('Macro exportado');
+}}
+
+// ═══════════════════════════════════════════════════════
+//  MACRO RUNNER
+// ═══════════════════════════════════════════════════════
+function runMacro() {{
+  const code = document.getElementById('macro-input').value;
+  const logEl = document.getElementById('macro-exec-log');
+  document.getElementById('macro-run-log').style.display = 'block';
+  logEl.textContent = '';
+
+  const lines = code.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//'));
+  let errors = 0;
+
+  const log = (msg, ok=true) => {{
+    logEl.textContent += (ok ? '✓ ' : '✗ ') + msg + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }};
+
+  lines.forEach((line, idx) => {{
+    try {{
+      const parts = line.split(' ');
+      const cmd = parts[0].toUpperCase();
+      switch(cmd) {{
+        case 'SELECT_MONTH': {{
+          const m = parts[1];
+          if (RAW_DATA[m]) {{ selectMonth(m); log(`Mes ${{m}} seleccionado`); }}
+          else {{ log(`Mes ${{m}} no encontrado`, false); errors++; }}
+          break;
+        }}
+        case 'SHOW_COL': {{
+          const col = parts[1];
+          if (!displayCols.includes(col) && allCols.includes(col)) displayCols.push(col);
+          renderColPicker(); renderTable();
+          log(`Columna "${{col}}" mostrada`);
+          break;
+        }}
+        case 'HIDE_COL': {{
+          displayCols = displayCols.filter(c => c !== parts[1]);
+          renderColPicker(); renderTable();
+          log(`Columna "${{parts[1]}}" ocultada`);
+          break;
+        }}
+        case 'SORT_COL': {{
+          sortCol = parts[1];
+          sortDir = parts[2] === 'DESC' ? -1 : 1;
+          renderTable();
+          log(`Ordenado por ${{parts[1]}} ${{parts[2]||'ASC'}}`);
+          break;
+        }}
+        case 'ADD_COLUMN': {{
+          // ADD_COLUMN <name> VALUE "<val>" ELSE "<else>" CONDITIONS [...]
+          const nameC = parts[1];
+          const valMatch = line.match(/VALUE "([^"]*)"/);
+          const elseMatch = line.match(/ELSE "([^"]*)"/);
+          const condMatch = line.match(/CONDITIONS (.+)$/);
+          const val = valMatch ? valMatch[1] : '';
+          const elseV = elseMatch ? elseMatch[1] : '';
+          const conditions = condMatch ? JSON.parse(condMatch[1]) : [];
+          const fn = (row) => {{
+            const match = conditions.every(c => {{
+              const rv = String(row[c.col] ?? '');
+              if (c.op === '=') return rv === c.val;
+              if (c.op === '!=') return rv !== c.val;
+              if (c.op === 'contains') return rv.toLowerCase().includes(c.val.toLowerCase());
+              return false;
+            }});
+            return match ? val : elseV;
+          }};
+          customCols[nameC] = fn;
+          if (!allCols.includes(nameC)) allCols.push(nameC);
+          if (!displayCols.includes(nameC)) displayCols.push(nameC);
+          currentData.forEach(row => row[nameC] = fn(row));
+          renderColPicker(); applyFilters(); updateCustomColsList();
+          log(`Columna "${{nameC}}" creada`);
+          break;
+        }}
+        case 'SUM': {{
+          // SUM col:<sumCol> WHERE col:<filterCol>=<filterVal> LABEL <label>
+          const sumColM = line.match(/SUM col:([^ ]+)/);
+          const whereM = line.match(/WHERE col:([^ =]+)=([^ ]+)/);
+          const labelM = line.match(/LABEL ([^ ]+)/);
+          if (sumColM && whereM) {{
+            sumRules.push({{
+              sumCol: sumColM[1], filterCol: whereM[1],
+              filterVal: whereM[2], label: labelM ? labelM[1] : whereM[2]
+            }});
+            document.getElementById('sum-results-card').style.display = 'block';
+            renderSumTable();
+            log(`Sumatoria agregada: ${{sumColM[1]}} donde ${{whereM[1]}}=${{whereM[2]}}`);
+          }} else {{ log('Sintaxis SUM inválida', false); errors++; }}
+          break;
+        }}
+        case 'REAPPLY_MANAGEMENT': reapplyManagement(); log('Management reaplicado'); break;
+        case 'CLEAR_SUMS': clearSumRules(); log('Sumatorias limpiadas'); break;
+        case 'EXPORT_CSV': exportCSV(); log('CSV exportado'); break;
+        default: log(`Comando desconocido: "${{cmd}}"`, false); errors++;
+      }}
+    }} catch(e) {{
+      log(`Error en línea ${{idx+1}}: ${{e.message}}`, false);
+      errors++;
+    }}
+  }});
+
+  const summary = `\n--- ${{lines.length}} comandos procesados, ${{errors}} errores ---`;
+  logEl.textContent += summary;
+  toast(errors === 0 ? `Macro ejecutado: ${{lines.length}} comandos` : `Macro con ${{errors}} error(es)`, errors > 0);
+}}
+
+// ═══════════════════════════════════════════════════════
+//  UTILITIES
+// ═══════════════════════════════════════════════════════
+let toastTimer;
+function toast(msg, isError=false) {{
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = isError ? 'var(--danger)' : 'var(--accent)';
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 3000);
+}}
+</script>
+</body>
+</html>"""
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"\n✓ HTML generado: {output_path}")
+
+# ─── ENTRY POINT ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Compatible con Jupyter Notebook y ejecucion directa desde CMD
+    try:
+        _base_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        _base_dir = os.getcwd()  # En Jupyter usa el directorio del kernel
+
+    output_html = os.path.join(_base_dir, "investment_dashboard.html")
+    if len(sys.argv) > 1:
+        output_html = sys.argv[1]
+
+    print(f"Output: {output_html}\n")
+
+    try:
+        datasets = build_datasets()
+    except Exception as e:
+        print(f"\n[FATAL] Pipeline error: {e}")
+        datasets = {}
+
+    if not datasets:
+        print("\n[WARN] No datasets loaded. Generating dashboard with empty state.")
+
+    generate_html(datasets, output_html)
+    print(f"\nAbre en tu navegador:\n  {output_html}")
