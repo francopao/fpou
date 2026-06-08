@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Elecciones Perú 2026 — AFP Integra RVL</title>
+<!-- Chart.js: múltiples CDN para garantizar carga -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+if(typeof Chart==='undefined'){
+  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"><\/script>');
+}
+</script>
+<style>
+/* ── AFP Integra Corporate Theme — fondo blanco ── */
+:root{
+  --navy:#1E2E6E; --teal:#00AECB; --yellow:#E3E829;
+  --gray1:#DCDDDE; --gray2:#7E8083;
+  --jp:#22c55e; --fp:#f97316;
+  --jp-l:rgba(34,197,94,0.15); --fp-l:rgba(249,115,22,0.15);
+  --bg:#F8F9FC; --surface:#FFFFFF;
+  --border:#E2E6EF; --text:#1a2340; --muted:#6b7a99;
+  --green:#2ec97a; --red:#e84343; --amber:#e0a320;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',Arial,sans-serif;font-size:13px;line-height:1.5}
+
+/* HEADER */
+.top-bar{height:5px;background:linear-gradient(90deg,var(--navy) 0%,var(--teal) 70%,var(--yellow) 100%)}
+header{background:var(--navy);color:#fff;padding:12px 24px;display:flex;align-items:center;gap:16px}
+header .logo-text{font-size:18px;font-weight:700;letter-spacing:.06em;color:#fff}
+header .logo-sub{font-size:11px;color:rgba(255,255,255,.6);margin-top:2px}
+header .header-right{margin-left:auto;text-align:right;font-size:11px;color:rgba(255,255,255,.7)}
+header .header-ts{font-size:10px;color:#00AECB;margin-top:2px;font-family:monospace}
+
+/* NAV */
+nav{background:var(--surface);border-bottom:2px solid var(--navy);padding:0 24px;
+     display:flex;gap:0;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(30,46,110,.08)}
+nav a{color:var(--muted);text-decoration:none;font-size:12px;font-weight:600;
+       padding:12px 16px;display:block;border-bottom:3px solid transparent;transition:.2s}
+nav a:hover{color:var(--navy);border-bottom-color:var(--teal)}
+
+/* SECTIONS */
+.section{padding:28px 24px;max-width:1400px;margin:0 auto}
+.section-header{display:flex;align-items:baseline;gap:12px;margin-bottom:20px;
+                  border-left:4px solid var(--teal);padding-left:12px}
+.section-tag{font-size:10px;font-weight:700;letter-spacing:.14em;color:var(--teal);text-transform:uppercase}
+.section-title{font-size:20px;font-weight:700;color:var(--navy)}
+.section-sub{font-size:11px;color:var(--muted);margin-left:auto}
+.sep{border:none;border-top:1px solid var(--border);margin:0}
+
+/* CARDS */
+.cards{display:grid;gap:12px;margin-bottom:20px}
+.c2{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.c4{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;
+       box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.card-lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.card-val{font-size:28px;font-weight:700;margin:4px 0;line-height:1}
+.card-sub{font-size:11px;color:var(--muted)}
+.card-accent{border-top:3px solid var(--teal)}
+
+/* SCOREBOARD */
+.scoreboard{background:var(--navy);color:#fff;border-radius:10px;padding:20px 24px;
+             margin-bottom:16px;display:grid;
+             grid-template-columns:1fr auto 1fr;gap:16px;align-items:center}
+.sc-side{text-align:center}
+.sc-partido{font-size:10px;letter-spacing:.1em;font-weight:700;text-transform:uppercase;
+             opacity:.7;margin-bottom:6px}
+.sc-pct{font-size:48px;font-weight:700;line-height:1}
+.sc-votos{font-size:11px;opacity:.6;margin-top:4px}
+.sc-regs{font-size:11px;opacity:.7;margin-top:2px}
+.sc-mid{text-align:center;padding:0 8px}
+.sc-mid-lbl{font-size:9px;letter-spacing:.1em;text-transform:uppercase;opacity:.6;margin-bottom:4px}
+.sc-mid-val{font-size:22px;font-weight:700;color:#E3E829}
+.sc-mid-sub{font-size:9px;opacity:.6;margin-top:2px}
+.bar-container{margin:12px 0;background:rgba(255,255,255,.15);border-radius:4px;height:8px;overflow:hidden}
+.bar-jp{height:100%;background:var(--jp);border-radius:4px;transition:width 1s ease}
+
+/* GRID */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px}
+@media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+
+/* PANEL */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;
+        margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.panel-title{font-size:13px;font-weight:600;color:var(--navy);margin-bottom:4px}
+.panel-sub{font-size:10px;color:var(--muted);margin-bottom:12px}
+canvas{max-height:320px;width:100%!important}
+
+/* TABLE */
+.tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border);margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:var(--navy);color:#fff;padding:8px 10px;text-align:left;font-size:10px;
+    letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--border)}
+tr:hover td{background:#f0f4ff}
+.num{font-family:monospace;text-align:right}
+.ts-cell{font-family:monospace;font-size:10px;color:var(--muted)}
+.jp{color:var(--jp);font-weight:600} .fp{color:var(--fp);font-weight:600}
+.up{color:var(--green);font-weight:600} .dn{color:var(--red)} .neu{color:var(--amber)}
+.bdg{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:700}
+.bdg-jp{background:rgba(34,197,94,.15);color:#16a34a}
+.bdg-fp{background:rgba(249,115,22,.15);color:#c2410c}
+
+/* CONTROLS */
+.ctrl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.ctrl-lbl{font-size:11px;color:var(--muted);font-weight:600}
+select,button{background:var(--surface);color:var(--text);border:1px solid var(--border);
+               border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;
+               font-family:inherit;transition:.2s}
+select:hover,button:hover{border-color:var(--teal);color:var(--navy)}
+button.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+
+/* MODELO */
+.ref-box{background:#f0f7ff;border:1px solid #c7dcf5;border-left:4px solid var(--navy);
+           border-radius:6px;padding:14px;font-size:11px;line-height:1.8;color:var(--text);
+           margin-top:12px}
+
+/* ENCUESTA CARDS */
+.enc-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+            overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.enc-header{background:var(--navy);color:#fff;padding:10px 14px}
+.enc-header-name{font-weight:700;font-size:13px}
+.enc-header-sub{font-size:10px;opacity:.7;margin-top:2px}
+.enc-body{padding:14px}
+.enc-veredicto{text-align:center;font-weight:700;font-size:12px;
+                color:#E3E829;background:var(--navy);
+                padding:6px;border-radius:4px;margin-bottom:12px}
+.enc-row{display:flex;justify-content:space-between;align-items:flex-end}
+.enc-cand{text-align:center}
+.enc-cand-lbl{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.enc-cand-pct{font-size:32px;font-weight:700;line-height:1.1}
+.enc-bar{height:8px;background:var(--gray1);border-radius:4px;overflow:hidden;margin:10px 0}
+.enc-bar-jp{height:100%;border-radius:4px}
+
+/* FOOTER */
+footer{background:var(--navy);color:rgba(255,255,255,.6);text-align:center;padding:16px;
+        font-size:10px;margin-top:24px}
+footer .ft-bar{height:3px;background:linear-gradient(90deg,var(--teal),var(--yellow));margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="top-bar"></div>
+<header>
+  <div>
+    <div class="logo-text">AFP INTEGRA</div>
+    <div class="logo-sub">Renta Variable Local · Modelo Franco</div>
+  </div>
+  <div style="margin-left:20px;color:rgba(255,255,255,.8);font-size:13px;font-weight:600">
+    Monitoreo Electoral — Segunda Vuelta Presidencial 2026
+  </div>
+  <div class="header-right">
+    <div>Generado el</div>
+    <div class="header-ts">08/06/2026 08:45</div>
+  </div>
+</header>
+<nav>
+  <a href="#s1">📊 ONPE Regional</a>
+  <a href="#s2">📋 Encuestas CR</a>
+  <a href="#s3">📈 Acciones BVL</a>
+  <a href="#s4">🎯 Modelo Pred.</a>
+  <a href="#s5">💹 Renta Fija</a>
+</nav>
+
+<!-- ═══ S1 ONPE REGIONAL ═══════════════════════════════════════ -->
+<div class="section" id="s1">
+  <div class="section-header">
+    <div>
+      <div class="section-tag">Sección 1</div>
+      <div class="section-title">Resultados ONPE — Segunda Vuelta 2026</div>
+    </div>
+    <div class="section-sub" id="s1-ts">Actualizado: 2026-06-07 22:26:00</div>
+  </div>
+
+  <div class="scoreboard">
+    <div class="sc-side">
+      <div class="sc-partido" style="color:rgba(34,197,94,.8)">JP · Juntos por el Perú</div>
+      <div class="sc-pct" style="color:#22c55e">47.316%</div>
+      <div class="sc-votos">5,422,339 votos</div>
+      <div class="sc-regs">16 regiones</div>
+    </div>
+    <div class="sc-mid">
+      <div class="sc-mid-lbl">Actas contab.</div>
+      <div class="sc-mid-val" id="sc-actas-pct">—%</div>
+      <div class="sc-mid-sub" id="sc-actas-n">—</div>
+    </div>
+    <div class="sc-side">
+      <div class="sc-partido" style="color:rgba(249,115,22,.8)">FP · Fuerza Popular</div>
+      <div class="sc-pct" style="color:#f97316">52.684%</div>
+      <div class="sc-votos">6,037,459 votos</div>
+      <div class="sc-regs">9 regiones</div>
+    </div>
+  </div>
+  <div class="bar-container">
+    <div class="bar-jp" style="width:47.32%"></div>
+  </div>
+
+  <div class="g2">
+    <div class="panel">
+      <div class="panel-title">Resultado por región — % votos válidos JP vs FP</div>
+      <div class="panel-sub">Ordenado de mayor a menor ventaja JP. Verde = JP lidera, Naranja = FP lidera.</div>
+      <canvas id="cRegiones"></canvas>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Avance de actas contabilizadas por región</div>
+      <div class="panel-sub">Verde >80% · Amarillo >40% · Rojo <40% de actas procesadas</div>
+      <canvas id="cActas"></canvas>
+    </div>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr>
+        <th>Región</th><th>Gana</th>
+        <th>JP %</th><th>FP %</th><th>Margen</th>
+        <th>Cont.</th><th>Total</th><th>% Actas</th><th>Hora</th>
+      </tr></thead>
+      <tbody><tr>
+<td><b>AMAZONAS</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">59.107%</td>
+<td class="num fp">40.893%</td>
+<td class="num" style="color:#22c55e">+18.21pp</td>
+<td class="num">543</td>
+<td class="num">1,278</td>
+<td class="num neu">42.5%</td>
+<td class="ts-cell">22:21:11</td>
+</tr><tr>
+<td><b>APURÍMAC</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">78.223%</td>
+<td class="num fp">21.777%</td>
+<td class="num" style="color:#22c55e">+56.45pp</td>
+<td class="num">558</td>
+<td class="num">1,317</td>
+<td class="num neu">42.4%</td>
+<td class="ts-cell">22:21:35</td>
+</tr><tr>
+<td><b>AREQUIPA</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">61.451%</td>
+<td class="num fp">38.549%</td>
+<td class="num" style="color:#22c55e">+22.90pp</td>
+<td class="num">0</td>
+<td class="num">967</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:21:46</td>
+</tr><tr>
+<td><b>AYACUCHO</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">76.861%</td>
+<td class="num fp">23.139%</td>
+<td class="num" style="color:#22c55e">+53.72pp</td>
+<td class="num">861</td>
+<td class="num">872</td>
+<td class="num up">98.7%</td>
+<td class="ts-cell">22:21:58</td>
+</tr><tr>
+<td><b>CAJAMARCA</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">61.505%</td>
+<td class="num fp">38.495%</td>
+<td class="num" style="color:#22c55e">+23.01pp</td>
+<td class="num">0</td>
+<td class="num">9</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:22:10</td>
+</tr><tr>
+<td><b>CALLAO</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">33.005%</td>
+<td class="num fp">66.995%</td>
+<td class="num" style="color:#f97316">+33.99pp</td>
+<td class="num">0</td>
+<td class="num">881</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:22:21</td>
+</tr><tr>
+<td><b>CUSCO</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">73.099%</td>
+<td class="num fp">26.901%</td>
+<td class="num" style="color:#22c55e">+46.20pp</td>
+<td class="num">0</td>
+<td class="num">34</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:22:33</td>
+</tr><tr>
+<td><b>HUANCAVELICA</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">83.390%</td>
+<td class="num fp">16.610%</td>
+<td class="num" style="color:#22c55e">+66.78pp</td>
+<td class="num">467</td>
+<td class="num">1,273</td>
+<td class="num dn">36.7%</td>
+<td class="ts-cell">22:22:45</td>
+</tr><tr>
+<td><b>HUÁNUCO</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">58.857%</td>
+<td class="num fp">41.143%</td>
+<td class="num" style="color:#22c55e">+17.71pp</td>
+<td class="num">0</td>
+<td class="num">9</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:22:57</td>
+</tr><tr>
+<td><b>ICA</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">46.066%</td>
+<td class="num fp">53.934%</td>
+<td class="num" style="color:#f97316">+7.87pp</td>
+<td class="num">0</td>
+<td class="num">874</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:23:08</td>
+</tr><tr>
+<td><b>JUNÍN</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">53.741%</td>
+<td class="num fp">46.259%</td>
+<td class="num" style="color:#22c55e">+7.48pp</td>
+<td class="num">0</td>
+<td class="num">17</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:23:20</td>
+</tr><tr>
+<td><b>LA LIBERTAD</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">38.522%</td>
+<td class="num fp">61.478%</td>
+<td class="num" style="color:#f97316">+22.96pp</td>
+<td class="num">0</td>
+<td class="num">25</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:23:31</td>
+</tr><tr>
+<td><b>LAMBAYEQUE</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">39.613%</td>
+<td class="num fp">60.387%</td>
+<td class="num" style="color:#f97316">+20.77pp</td>
+<td class="num">0</td>
+<td class="num">988</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:23:43</td>
+</tr><tr>
+<td><b>LIMA</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">35.721%</td>
+<td class="num fp">64.279%</td>
+<td class="num" style="color:#f97316">+28.56pp</td>
+<td class="num">0</td>
+<td class="num">573</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:23:55</td>
+</tr><tr>
+<td><b>LORETO</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">45.826%</td>
+<td class="num fp">54.174%</td>
+<td class="num" style="color:#f97316">+8.35pp</td>
+<td class="num">867</td>
+<td class="num">879</td>
+<td class="num up">98.6%</td>
+<td class="ts-cell">22:24:06</td>
+</tr><tr>
+<td><b>MADRE DE DIOS</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">66.202%</td>
+<td class="num fp">33.798%</td>
+<td class="num" style="color:#22c55e">+32.40pp</td>
+<td class="num">296</td>
+<td class="num">507</td>
+<td class="num neu">58.4%</td>
+<td class="ts-cell">22:24:18</td>
+</tr><tr>
+<td><b>MOQUEGUA</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">71.175%</td>
+<td class="num fp">28.825%</td>
+<td class="num" style="color:#22c55e">+42.35pp</td>
+<td class="num">469</td>
+<td class="num">578</td>
+<td class="num up">81.1%</td>
+<td class="ts-cell">22:24:31</td>
+</tr><tr>
+<td><b>PASCO</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">58.361%</td>
+<td class="num fp">41.639%</td>
+<td class="num" style="color:#22c55e">+16.72pp</td>
+<td class="num">334</td>
+<td class="num">802</td>
+<td class="num neu">41.6%</td>
+<td class="ts-cell">22:24:44</td>
+</tr><tr>
+<td><b>PIURA</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">37.224%</td>
+<td class="num fp">62.776%</td>
+<td class="num" style="color:#f97316">+25.55pp</td>
+<td class="num">0</td>
+<td class="num">48</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:24:56</td>
+</tr><tr>
+<td><b>PUNO</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">84.499%</td>
+<td class="num fp">15.501%</td>
+<td class="num" style="color:#22c55e">+69.00pp</td>
+<td class="num">0</td>
+<td class="num">20</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:25:09</td>
+</tr><tr>
+<td><b>SAN MARTÍN</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">51.167%</td>
+<td class="num fp">48.833%</td>
+<td class="num" style="color:#22c55e">+2.33pp</td>
+<td class="num">0</td>
+<td class="num">7</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:25:22</td>
+</tr><tr>
+<td><b>TACNA</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">69.627%</td>
+<td class="num fp">30.373%</td>
+<td class="num" style="color:#22c55e">+39.25pp</td>
+<td class="num">853</td>
+<td class="num">1,041</td>
+<td class="num up">81.9%</td>
+<td class="ts-cell">22:25:35</td>
+</tr><tr>
+<td><b>TUMBES</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">35.327%</td>
+<td class="num fp">64.673%</td>
+<td class="num" style="color:#f97316">+29.35pp</td>
+<td class="num">584</td>
+<td class="num">632</td>
+<td class="num up">92.4%</td>
+<td class="ts-cell">22:25:47</td>
+</tr><tr>
+<td><b>UCAYALI</b></td>
+<td><span class="bdg bdg-fp">FP</span></td>
+<td class="num jp">42.313%</td>
+<td class="num fp">57.687%</td>
+<td class="num" style="color:#f97316">+15.37pp</td>
+<td class="num">887</td>
+<td class="num">1,564</td>
+<td class="num neu">56.7%</td>
+<td class="ts-cell">22:26:00</td>
+</tr><tr>
+<td><b>ÁNCASH</b></td>
+<td><span class="bdg bdg-jp">JP</span></td>
+<td class="num jp">55.016%</td>
+<td class="num fp">44.984%</td>
+<td class="num" style="color:#22c55e">+10.03pp</td>
+<td class="num">0</td>
+<td class="num">28</td>
+<td class="num dn">0.0%</td>
+<td class="ts-cell">22:21:23</td>
+</tr></tbody>
+    </table>
+  </div>
+</div>
+<hr class="sep">
+
+<!-- ═══ S2 ENCUESTADORAS ════════════════════════════════════════ -->
+<div class="section" id="s2">
+  <div class="section-header">
+    <div>
+      <div class="section-tag">Sección 2</div>
+      <div class="section-title">Conteo Rápido · Datum &amp; Ipsos · 07 Jun 2026</div>
+    </div>
+    <div class="section-sub">Datos de encuestadoras al cierre de jornada electoral</div>
+  </div>
+
+  <div class="cards c2" id="enc-cards"></div>
+
+  <div class="g2">
+    <div class="panel">
+      <div class="panel-title">Datum — Intervalos de confianza (±1.0%)</div>
+      <div class="panel-sub">Los rangos se solapan → empate estadístico. Requiere cómputo oficial ONPE para definir ganador.</div>
+      <canvas id="cDatIC"></canvas>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Ipsos — JP% desagregado por zona geográfica</div>
+      <div class="panel-sub">Muestra clara la fractura Lima (FP) vs Interior (JP)</div>
+      <canvas id="cIpsos"></canvas>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Datum — Evolución del voto JP a lo largo de la campaña (encuestas previas)</div>
+    <div class="panel-sub">La tendencia muestra convergencia hacia 50-50 desde ventaja histórica de FP</div>
+    <canvas id="cEvol" style="max-height:200px"></canvas>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Comparativo: Conteo Rápido Datum vs ONPE parcial — JP% por región</div>
+    <div class="panel-sub">Permite validar la representatividad del conteo rápido vs actas oficiales procesadas</div>
+    <canvas id="cDatReg"></canvas>
+  </div>
+</div>
+<hr class="sep">
+
+<!-- ═══ S3 ACCIONES BVL ══════════════════════════════════════════ -->
+<div class="section" id="s3">
+  <div class="section-header">
+    <div>
+      <div class="section-tag">Sección 3</div>
+      <div class="section-title">Acciones BVL — Comportamiento en Ventanas Electorales 2016–2026</div>
+    </div>
+  </div>
+
+  <div class="ctrl">
+    <span class="ctrl-lbl">Acción:</span>
+    <select id="selEmp"></select>
+    <span class="ctrl-lbl" style="margin-left:12px">Elección:</span>
+    <select id="selElec">
+      <option value="1V_2016">1ª Vuelta 2016 — 10 abr</option>
+      <option value="2V_2016">2ª Vuelta 2016 — 05 jun</option>
+      <option value="1V_2021">1ª Vuelta 2021 — 11 abr</option>
+      <option value="2V_2021">2ª Vuelta 2021 — 06 jun</option>
+      <option value="1V_2026">1ª Vuelta 2026 — 13 abr</option>
+      <option value="2V_2026" selected>2ª Vuelta 2026 — 07 jun</option>
+    </select>
+  </div>
+  <div class="panel">
+    <div class="panel-title" id="t3title">Retorno acumulado ±30 días (Día 0 = día de elección)</div>
+    <div class="panel-sub">Retorno relativo al precio de apertura del período. Línea punteada = promedio del sector.</div>
+    <canvas id="cStocks"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Retorno por sector en días clave alrededor de la elección</div>
+    <div class="panel-sub">Días: −5, 0, +5, +10, +20 respecto al día de votación. Promedio simple por sector.</div>
+    <div class="ctrl">
+      <span class="ctrl-lbl">Elección:</span>
+      <select id="selElec2">
+        <option value="1V_2016">1ª Vuelta 2016</option>
+        <option value="2V_2016">2ª Vuelta 2016</option>
+        <option value="1V_2021">1ª Vuelta 2021</option>
+        <option value="2V_2021">2ª Vuelta 2021</option>
+        <option value="1V_2026">1ª Vuelta 2026</option>
+        <option value="2V_2026" selected>2ª Vuelta 2026</option>
+      </select>
+    </div>
+    <canvas id="cSect"></canvas>
+  </div>
+</div>
+<hr class="sep">
+
+<!-- ═══ S4 MODELO ════════════════════════════════════════════════ -->
+<div class="section" id="s4">
+  <div class="section-header">
+    <div>
+      <div class="section-tag">Sección 4 · Beta-Binomial Bayesiano</div>
+      <div class="section-title">Modelo Estadístico — Estimación del Ganador</div>
+    </div>
+  </div>
+
+  <div class="cards c4" id="mod-cards"></div>
+
+  <div class="g2">
+    <div class="panel">
+      <div class="panel-title">Distribución posterior — P(θ | votos ONPE observados)</div>
+      <div class="panel-sub" id="mod-eq" style="font-family:monospace;font-size:10px;color:var(--muted)"></div>
+      <canvas id="cPost"></canvas>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Evolución de P(FP gana) conforme llegan regiones</div>
+      <div class="panel-sub">Posterior actualizado secuencialmente por orden de timestamp</div>
+      <canvas id="cEvolP"></canvas>
+    </div>
+  </div>
+  <div class="ref-box" id="ref-mod"></div>
+</div>
+<hr class="sep">
+
+<!-- ═══ S5 RENTA FIJA ════════════════════════════════════════════ -->
+<div class="section" id="s5">
+  <div class="section-header">
+    <div>
+      <div class="section-tag">Sección 5</div>
+      <div class="section-title">Renta Fija Local — Mercado Secundario</div>
+    </div>
+    <div class="section-sub" id="rf-ult"></div>
+  </div>
+
+  <!-- Cards resumen por tipo -->
+  <div class="cards c4" id="rf-cards" style="margin-bottom:18px"></div>
+
+  <!-- Plot 1: Curva soberana PEN + VAC + BCRP -->
+  <div class="panel">
+    <div class="panel-title">Curva de Rendimientos — Soberanos PEN &amp; VAC + Certificados BCRP</div>
+    <div class="panel-sub">
+      <b>Soberanos</b> (Emisor GOB.CENTRAL / nemónico SB*) = referencia libre de riesgo crediticio local. &nbsp;
+      <b>BCRP</b> (nemónico CD*) = señal de política monetaria. &nbsp;
+      <b>VAC</b> = tasa real indexada a inflación. No se mezclan entre sí.
+    </div>
+    <canvas id="cCurvasSob" style="max-height:300px"></canvas>
+  </div>
+
+  <!-- Plot 2: Spread corporativo vs soberano PEN -->
+  <div class="panel">
+    <div class="panel-title">Spread Crediticio — Corporativo PEN vs Soberano PEN (prima de riesgo por año de vencimiento)</div>
+    <div class="panel-sub">
+      Puntos básicos adicionales que paga un corporativo vs el soberano de igual vencimiento y moneda.
+      Eje izquierdo = TIR (%) · Eje derecho = Spread (pb).
+    </div>
+    <canvas id="cSpread" style="max-height:280px"></canvas>
+  </div>
+
+  <!-- Plot 3: Scatter TIR vs Duración por tipo -->
+  <div class="panel">
+    <div class="panel-title">TIR vs Duración — Universo completo por tipo de instrumento</div>
+    <div class="panel-sub">
+      <b style="color:#1E2E6E">■ Soberano</b> &nbsp;
+      <b style="color:#00AECB">■ BCRP</b> &nbsp;
+      <b style="color:#2f81f7">■ Corp IG</b> &nbsp;
+      <b style="color:#e0a320">■ Corp Corto Plazo</b> &nbsp;
+      <b style="color:#e84343">■ Corp Speculative</b>
+    </div>
+    <div class="ctrl">
+      <span class="ctrl-lbl">Moneda:</span>
+      <select id="selMonRF">
+        <option value="TODAS">Todas</option>
+        <option value="PEN" selected>PEN (Sol)</option>
+        <option value="USD">USD (Dólar)</option>
+        <option value="VAC">VAC (Indexado)</option>
+      </select>
+    </div>
+    <canvas id="cScatterRF" style="max-height:400px"></canvas>
+  </div>
+</div>
+
+<footer>
+  <div class="ft-bar"></div>
+  AFP Integra · Renta Variable Local · 08/06/2026 08:45 · Fuentes: ONPE / Datum Internacional / Ipsos Perú / Bloomberg
+</footer>
+
+<script>
+// ═══════════════════ DATOS ═══════════════════════════════════════
+const D = {"s1": {"regiones": [{"nombre": "AMAZONAS", "pct_jp": 59.107, "pct_fp": 40.893, "votos_jp": 57319, "votos_fp": 39656, "ganador": "JP", "margen": 18.214, "actas_cont": 543, "actas_jee": 9, "actas_pend": 726, "actas_tot": 1278, "pct_actas": 42.5, "ts": "2026-06-07T22:21:11"}, {"nombre": "APURÍMAC", "pct_jp": 78.223, "pct_fp": 21.777, "votos_jp": 84462, "votos_fp": 23514, "ganador": "JP", "margen": 56.446, "actas_cont": 558, "actas_jee": 4, "actas_pend": 755, "actas_tot": 1317, "pct_actas": 42.4, "ts": "2026-06-07T22:21:35"}, {"nombre": "AREQUIPA", "pct_jp": 61.451, "pct_fp": 38.549, "votos_jp": 448174, "votos_fp": 281142, "ganador": "JP", "margen": 22.902, "actas_cont": 0, "actas_jee": 22, "actas_pend": 945, "actas_tot": 967, "pct_actas": 0.0, "ts": "2026-06-07T22:21:46"}, {"nombre": "AYACUCHO", "pct_jp": 76.861, "pct_fp": 23.139, "votos_jp": 131417, "votos_fp": 39564, "ganador": "JP", "margen": 53.722, "actas_cont": 861, "actas_jee": 11, "actas_pend": 0, "actas_tot": 872, "pct_actas": 98.7, "ts": "2026-06-07T22:21:58"}, {"nombre": "CAJAMARCA", "pct_jp": 61.505, "pct_fp": 38.495, "votos_jp": 209137, "votos_fp": 130895, "ganador": "JP", "margen": 23.01, "actas_cont": 0, "actas_jee": 9, "actas_pend": 0, "actas_tot": 9, "pct_actas": 0.0, "ts": "2026-06-07T22:22:10"}, {"nombre": "CALLAO", "pct_jp": 33.005, "pct_fp": 66.995, "votos_jp": 142764, "votos_fp": 289784, "ganador": "FP", "margen": 33.99, "actas_cont": 0, "actas_jee": 47, "actas_pend": 834, "actas_tot": 881, "pct_actas": 0.0, "ts": "2026-06-07T22:22:21"}, {"nombre": "CUSCO", "pct_jp": 73.099, "pct_fp": 26.901, "votos_jp": 345218, "votos_fp": 127042, "ganador": "JP", "margen": 46.198, "actas_cont": 0, "actas_jee": 34, "actas_pend": 0, "actas_tot": 34, "pct_actas": 0.0, "ts": "2026-06-07T22:22:33"}, {"nombre": "HUANCAVELICA", "pct_jp": 83.39, "pct_fp": 16.61, "votos_jp": 69104, "votos_fp": 13764, "ganador": "JP", "margen": 66.78, "actas_cont": 467, "actas_jee": 4, "actas_pend": 802, "actas_tot": 1273, "pct_actas": 36.7, "ts": "2026-06-07T22:22:45"}, {"nombre": "HUÁNUCO", "pct_jp": 58.857, "pct_fp": 41.143, "votos_jp": 137171, "votos_fp": 95886, "ganador": "JP", "margen": 17.714, "actas_cont": 0, "actas_jee": 9, "actas_pend": 0, "actas_tot": 9, "pct_actas": 0.0, "ts": "2026-06-07T22:22:57"}, {"nombre": "ICA", "pct_jp": 46.066, "pct_fp": 53.934, "votos_jp": 163259, "votos_fp": 191145, "ganador": "FP", "margen": 7.868, "actas_cont": 0, "actas_jee": 11, "actas_pend": 863, "actas_tot": 874, "pct_actas": 0.0, "ts": "2026-06-07T22:23:08"}, {"nombre": "JUNÍN", "pct_jp": 53.741, "pct_fp": 46.259, "votos_jp": 254151, "votos_fp": 218763, "ganador": "JP", "margen": 7.482, "actas_cont": 0, "actas_jee": 17, "actas_pend": 0, "actas_tot": 17, "pct_actas": 0.0, "ts": "2026-06-07T22:23:20"}, {"nombre": "LA LIBERTAD", "pct_jp": 38.522, "pct_fp": 61.478, "votos_jp": 274173, "votos_fp": 437553, "ganador": "FP", "margen": 22.956, "actas_cont": 0, "actas_jee": 25, "actas_pend": 0, "actas_tot": 25, "pct_actas": 0.0, "ts": "2026-06-07T22:23:31"}, {"nombre": "LAMBAYEQUE", "pct_jp": 39.613, "pct_fp": 60.387, "votos_jp": 217007, "votos_fp": 330813, "ganador": "FP", "margen": 20.774, "actas_cont": 0, "actas_jee": 10, "actas_pend": 978, "actas_tot": 988, "pct_actas": 0.0, "ts": "2026-06-07T22:23:43"}, {"nombre": "LIMA", "pct_jp": 35.721, "pct_fp": 64.279, "votos_jp": 1476885, "votos_fp": 2657613, "ganador": "FP", "margen": 28.558, "actas_cont": 0, "actas_jee": 573, "actas_pend": 0, "actas_tot": 573, "pct_actas": 0.0, "ts": "2026-06-07T22:23:55"}, {"nombre": "LORETO", "pct_jp": 45.826, "pct_fp": 54.174, "votos_jp": 70603, "votos_fp": 83465, "ganador": "FP", "margen": 8.348, "actas_cont": 867, "actas_jee": 12, "actas_pend": 0, "actas_tot": 879, "pct_actas": 98.6, "ts": "2026-06-07T22:24:06"}, {"nombre": "MADRE DE DIOS", "pct_jp": 66.202, "pct_fp": 33.798, "votos_jp": 39640, "votos_fp": 20237, "ganador": "JP", "margen": 32.404, "actas_cont": 296, "actas_jee": 4, "actas_pend": 207, "actas_tot": 507, "pct_actas": 58.4, "ts": "2026-06-07T22:24:18"}, {"nombre": "MOQUEGUA", "pct_jp": 71.175, "pct_fp": 28.825, "votos_jp": 73369, "votos_fp": 29714, "ganador": "JP", "margen": 42.35, "actas_cont": 469, "actas_jee": 2, "actas_pend": 107, "actas_tot": 578, "pct_actas": 81.1, "ts": "2026-06-07T22:24:31"}, {"nombre": "PASCO", "pct_jp": 58.361, "pct_fp": 41.639, "votos_jp": 35376, "votos_fp": 25240, "ganador": "JP", "margen": 16.722, "actas_cont": 334, "actas_jee": 7, "actas_pend": 461, "actas_tot": 802, "pct_actas": 41.6, "ts": "2026-06-07T22:24:44"}, {"nombre": "PIURA", "pct_jp": 37.224, "pct_fp": 62.776, "votos_jp": 237749, "votos_fp": 400943, "ganador": "FP", "margen": 25.552, "actas_cont": 0, "actas_jee": 48, "actas_pend": 0, "actas_tot": 48, "pct_actas": 0.0, "ts": "2026-06-07T22:24:56"}, {"nombre": "PUNO", "pct_jp": 84.499, "pct_fp": 15.501, "votos_jp": 358177, "votos_fp": 65705, "ganador": "JP", "margen": 68.998, "actas_cont": 0, "actas_jee": 20, "actas_pend": 0, "actas_tot": 20, "pct_actas": 0.0, "ts": "2026-06-07T22:25:09"}, {"nombre": "SAN MARTÍN", "pct_jp": 51.167, "pct_fp": 48.833, "votos_jp": 130779, "votos_fp": 124813, "ganador": "JP", "margen": 2.334, "actas_cont": 0, "actas_jee": 7, "actas_pend": 0, "actas_tot": 7, "pct_actas": 0.0, "ts": "2026-06-07T22:25:22"}, {"nombre": "TACNA", "pct_jp": 69.627, "pct_fp": 30.373, "votos_jp": 134032, "votos_fp": 58467, "ganador": "JP", "margen": 39.254, "actas_cont": 853, "actas_jee": 12, "actas_pend": 176, "actas_tot": 1041, "pct_actas": 81.9, "ts": "2026-06-07T22:25:35"}, {"nombre": "TUMBES", "pct_jp": 35.327, "pct_fp": 64.673, "votos_jp": 41588, "votos_fp": 76135, "ganador": "FP", "margen": 29.346, "actas_cont": 584, "actas_jee": 4, "actas_pend": 44, "actas_tot": 632, "pct_actas": 92.4, "ts": "2026-06-07T22:25:47"}, {"nombre": "UCAYALI", "pct_jp": 42.313, "pct_fp": 57.687, "votos_jp": 69355, "votos_fp": 94555, "ganador": "FP", "margen": 15.374, "actas_cont": 887, "actas_jee": 21, "actas_pend": 656, "actas_tot": 1564, "pct_actas": 56.7, "ts": "2026-06-07T22:26:00"}, {"nombre": "ÁNCASH", "pct_jp": 55.016, "pct_fp": 44.984, "votos_jp": 221430, "votos_fp": 181051, "ganador": "JP", "margen": 10.032, "actas_cont": 0, "actas_jee": 28, "actas_pend": 0, "actas_tot": 28, "pct_actas": 0.0, "ts": "2026-06-07T22:21:23"}], "extranjero": {"pct_jp": 0.0, "pct_fp": 0.0, "votos_jp": 0, "votos_fp": 0}, "total_votos_jp": 5422339, "total_votos_fp": 6037459, "pct_nac_jp": 47.316, "pct_nac_fp": 52.684, "timestamp": "2026-06-07 22:26:00", "n_regiones_jp": 16, "n_regiones_fp": 9}, "s2": {"datum": {"fuente": "Datum Internacional", "muestra": "117,199 votos", "error": 1.0, "jp": 50.14, "fp": 49.86, "jp_min": 49.14, "jp_max": 51.14, "fp_min": 48.86, "fp_max": 50.86, "veredicto": "EMPATE ESTADÍSTICO", "por_region": {"Amazonas": 65.26, "Áncash": 56.72, "Apurímac": 80.87, "Arequipa": 62.74, "Ayacucho": 79.35, "Cajamarca": 67.98, "Callao": 35.87, "Cusco": 78.48, "Huancavelica": 80.6, "Huánuco": 64.75, "Ica": 46.18, "Junín": 53.39, "La Libertad": 42.69, "Lambayeque": 41.08, "Lima Met.": 35.77, "Lima Prov.": 47.64, "Loreto": 44.92, "Madre de Dios": 72.96, "Moquegua": 66.81, "Pasco": 62.7, "Piura": 42.76, "Puno": 87.84, "San Martín": 54.04, "Tacna": 74.04, "Tumbes": 34.86, "Ucayali": 46.89, "Extranjero": 37.33}, "evolucion": [{"l": "Int.Voto\n17-20 May", "jp": 47.8, "fp": 52.2}, {"l": "Int.Voto\n26-30 May", "jp": 47.4, "fp": 52.6}, {"l": "Simulacro\n26-30 May", "jp": 47.1, "fp": 52.9}, {"l": "Int.Voto\n03-04 Jun", "jp": 48.8, "fp": 51.2}, {"l": "Simulacro\n06 Jun", "jp": 49.4, "fp": 50.6}, {"l": "Boca Urna\n07 Jun", "jp": 49.47, "fp": 50.53}, {"l": "C.Rápido\n07 Jun", "jp": 50.14, "fp": 49.86}]}, "ipsos": {"fuente": "Ipsos / Transparencia", "muestra": "1,037 actas", "error": 1.9, "jp": 50.3, "fp": 49.7, "jp_min": 48.4, "jp_max": 52.2, "fp_min": 47.8, "fp_max": 51.6, "veredicto": "EMPATE TÉCNICO", "desagregado": {"Lima": {"jp": 36.4, "fp": 63.6}, "Regiones": {"jp": 57.4, "fp": 42.6}, "Urbano": {"jp": 46.1, "fp": 53.9}, "Rural": {"jp": 69.0, "fp": 31.0}, "Costa": {"jp": 39.5, "fp": 60.5}, "Sierra": {"jp": 70.2, "fp": 29.8}, "Selva": {"jp": 58.6, "fp": 41.4}}}}, "s3v": {"1V_2016": {"fecha": "2016-04-10", "empresas": {"Alicorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 1.239, 1.239, 1.77, 2.478, 5.31, 5.664, 6.195, 6.195, 6.195, 4.425, 6.195, 6.195, 6.195, 5.841, 6.195, 5.31, 3.54, 2.655, 15.044, 16.814, 19.469, 17.699, 17.699, 20.354, 20.354, 17.699, 13.628, 12.035, 11.15, 10.796, 11.504, 10.619, 10.265, 13.274, 13.274, 15.044, 15.044, 15.044, 15.044, 15.044], "sector": "Consumo"}, "InRetail": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.0, 2.545, 5.527, 6.909, 14.982, 13.455, 13.455, 13.455, 13.455, 13.818, 17.091, 22.545, 19.636, 17.818, 17.818, 15.273, 9.091, 9.818, 22.182, 23.636, 23.636, 20.0, 20.0, 23.709, 23.636, 23.636, 21.818, 21.818, 21.818, 22.182, 21.818, 23.636, 23.636, 23.564, 23.636, 23.636, 25.091, 22.618, 23.636, 23.636], "sector": "Consumo"}, "Pacasmayo": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.0, -1.0, 0.0, 0.0, 7.0, 7.2, 3.0, 3.0, 2.8, 2.0, 2.0, 4.0, 2.0, -1.0, -1.4, -2.0, -7.0, -6.0, 8.0, 11.0, 12.0, 10.0, 11.0, 13.0, 19.0, 17.8, 17.0, 16.0, 13.6, 15.0, 15.0, 16.0, 19.0, 19.2, 18.2, 18.0, 21.0, 20.0, 19.0, 21.0], "sector": "Utilities"}, "Unacem": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 1.093, 1.093, -1.639, 1.639, 12.022, 19.126, 17.486, 22.404, 18.579, 18.579, 22.951, 22.951, 22.951, 20.219, 14.754, 8.197, 3.279, 9.29, 28.415, 36.612, 39.344, 34.426, 36.612, 42.077, 50.273, 53.005, 55.738, 53.005, 47.541, 44.809, 47.541, 45.355, 55.738, 60.656, 60.656, 55.738, 55.738, 50.273, 49.18, 47.541], "sector": "Utilities"}, "Aenza": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.0, 0.0, -8.0, -2.545, 1.455, 2.545, 2.545, 1.818, 0.0, -1.818, -0.364, 1.818, 0.0, 1.818, 0.0, 2.909, 0.0, -1.818, 1.818, 16.364, 31.273, 39.273, 41.818, 49.818, 58.182, 80.0, 76.364, 74.182, 63.636, 65.455, 65.455, 70.909, 73.818, 66.545, 63.636, 60.364, 56.364, 54.545, 60.0, 58.182], "sector": "Financial"}, "Ferreycorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 1.361, 0.68, 0.0, 0.0, -0.68, -1.361, 0.0, 0.0, 0.0, -0.68, -1.361, 0.0, -1.361, -1.361, -3.401, -4.762, -9.524, -3.401, 8.844, 12.245, 13.605, 11.565, 12.245, 15.646, 22.449, 12.245, 8.844, 7.483, 7.483, 4.762, 7.483, 15.646, 17.007, 19.048, 17.007, 15.646, 16.327, 12.245, 8.844, 13.605], "sector": "Financial"}}}, "2V_2016": {"fecha": "2016-06-05", "empresas": {"Alicorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 25, 26, 29, 30], "ret": [0.0, 0.0, 0.0, 0.0, 0.0, -0.769, -0.462, -1.231, -1.538, -3.077, -1.538, -0.769, -0.923, -0.923, -0.923, -0.154, 0.0, 0.0, 0.0, 0.0, -0.769, -0.769, -0.769, -0.769, -1.538, -2.769, -3.692, -4.615, -4.615, -6.154, -5.385, -5.538, -5.385, -3.077, -2.308, -3.846, -3.846, -3.538, -0.769, -0.769, -0.769, -1.077], "sector": "Consumo"}, "InRetail": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 25, 26, 29, 30], "ret": [0.0, 0.83, 0.83, 0.771, -1.542, 0.83, 1.601, 1.423, 1.423, 1.423, 0.83, 0.83, -0.059, 0.415, 0.83, 0.83, 0.83, 0.83, 0.83, 0.83, 0.83, 0.83, 1.423, -0.949, -0.949, 0.712, 0.712, -2.135, 0.237, -2.135, -2.135, -2.135, -1.542, 0.237, -0.356, -3.44, -3.084, -3.084, -1.542, 0.83, 0.83, 0.83], "sector": "Consumo"}, "Pacasmayo": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 25, 26, 29, 30], "ret": [0.0, -0.833, 0.833, 0.833, 0.833, 0.5, 1.333, 0.833, -0.333, -0.5, 0.667, 0.667, 1.0, 1.0, 1.0, 0.667, 0.667, 0.0, 0.333, 0.0, 0.833, 0.833, 0.5, 0.333, 0.167, -0.833, -1.667, -1.667, 0.0, -1.667, -2.5, -3.333, -3.333, -4.167, -3.0, -4.5, -5.333, -5.833, -2.167, -3.333, -3.0, -4.0], "sector": "Utilities"}, "Unacem": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 25, 26, 29, 30], "ret": [0.0, -0.727, -1.818, -1.818, 0.0, 0.0, -0.364, -1.818, -2.182, -3.636, -5.091, -5.091, -4.364, -4.364, -5.091, -3.636, -3.636, -3.273, -3.273, -3.273, -3.273, -1.818, -1.818, -5.455, -5.455, -5.455, -9.455, -11.273, -6.182, -5.818, -5.455, -5.455, -7.273, -7.273, -7.273, -7.273, -9.818, -9.091, -8.0, -9.091, -9.091, -8.364], "sector": "Utilities"}, "Aenza": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 25, 26, 29, 30], "ret": [0.0, 3.529, 2.353, 5.647, 4.706, 0.235, 3.529, 4.706, 4.0, 1.882, 0.235, 2.824, 9.412, 7.765, 5.882, 3.765, 4.235, 4.941, 0.0, 3.294, 4.706, 10.588, 12.471, 17.647, 12.941, 13.647, 11.294, 7.059, 2.353, 6.588, 3.529, 5.882, 4.706, 5.882, 7.059, 10.588, 7.059, 3.765, 5.882, 9.176, 12.0, 12.0], "sector": "Financial"}, "Ferreycorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 25, 26, 29, 30], "ret": [0.0, -3.03, 1.212, 3.03, 3.03, 1.818, 2.424, 2.424, 1.818, 1.818, 1.818, 1.818, 1.818, 1.818, 1.818, 2.424, 2.424, 3.03, 3.03, 3.03, 3.03, 1.818, 1.818, 1.818, 1.818, 0.606, 1.212, -0.606, -1.212, -3.03, 0.0, -0.606, -0.606, -3.03, -3.03, -6.061, -7.273, -8.485, -5.455, -5.455, -6.061, -7.879], "sector": "Financial"}}}, "1V_2021": {"fecha": "2021-04-11", "empresas": {"Alicorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.0, -0.373, 0.0, -1.491, -1.242, -1.739, -1.863, -1.863, -1.988, -3.975, -3.975, -4.348, -4.969, -4.348, -3.851, -3.851, -3.851, -4.099, -5.59, -4.348, -4.472, -4.596, -5.093, -11.18, -11.801, -12.422, -15.155, -20.497, -15.031, -16.77, -16.025, -13.043, -14.286, -15.528, -18.012, -18.012, -18.509, -17.764, -14.783, -13.043], "sector": "Consumo"}, "InRetail": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, -0.222, -1.111, -1.111, -2.222, -2.222, -3.111, -4.0, -5.111, -4.444, -4.444, -4.444, -5.333, -6.0, -6.0, -6.667, -6.667, -8.0, -8.222, -9.556, -9.889, -11.111, -11.778, -14.222, -15.956, -19.778, -20.667, -22.222, -23.333, -22.667, -22.222, -23.333, -21.111, -21.333, -20.667, -21.333, -21.333, -21.778, -22.0, -20.444, -20.0], "sector": "Consumo"}, "Pacasmayo": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, -0.335, -1.173, -0.838, -0.838, -0.67, -1.005, -1.173, -1.173, -1.173, -1.173, -1.675, -2.01, -2.01, -1.675, -2.848, -2.848, -3.853, -3.853, -4.188, -4.69, -7.035, -6.7, -6.868, -9.548, -12.06, -12.06, -13.735, -13.568, -13.735, -16.248, -16.248, -13.735, -8.71, -8.71, -8.71, -8.71, -8.71, -8.04, -9.548, -8.71], "sector": "Utilities"}, "Unacem": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.0, -1.087, -2.174, -2.717, -3.261, -2.174, -2.174, -4.891, -8.152, -10.326, -9.783, -7.609, -6.522, -5.978, -6.522, -6.522, -5.435, -4.891, -9.239, -9.239, -9.239, -8.696, -10.87, -19.022, -23.913, -23.913, -30.435, -29.891, -32.609, -32.609, -26.63, -22.283, -16.848, -18.478, -18.478, -18.478, -21.196, -18.478, -16.848, -17.391], "sector": "Utilities"}, "Aenza": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.0, -2.857, -2.286, -1.143, 0.0, -1.714, -4.0, -8.0, -2.857, 1.143, 1.714, 2.857, 2.857, 2.857, 2.857, 4.0, 4.0, 0.0, 0.0, 0.0, -5.714, -6.286, -5.714, -11.429, -20.0, -21.714, -9.143, -25.714, -33.714, -28.571, -31.429, -31.429, -26.857, -28.571, -31.429, -31.429, -32.571, -29.714, -26.857, -27.429], "sector": "Financial"}, "Ferreycorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30], "ret": [0.0, 0.459, 0.917, 1.376, 2.294, 3.211, 4.128, 3.67, 0.917, 0.0, -0.917, -0.459, 3.211, 1.835, 0.917, 1.835, 2.752, 3.211, -0.917, -1.376, -2.294, -3.67, -4.587, -2.752, -8.716, -16.514, -17.431, -24.312, -21.101, -22.018, -24.771, -22.018, -18.807, -15.596, -17.431, -16.055, -15.596, -16.055, -12.385, -13.303, -12.385], "sector": "Financial"}}}, "2V_2021": {"fecha": "2021-06-06", "empresas": {"Alicorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 24, 25, 26, 29, 30], "ret": [0.0, 3.625, 5.74, 7.402, 13.595, 12.538, 8.761, 8.308, 4.23, 5.438, 0.453, -7.855, -7.704, -8.006, -8.61, -0.302, -0.302, -4.079, -3.172, -1.813, 3.021, -12.538, -11.178, -8.61, -1.813, -4.079, -1.813, -2.568, -5.589, -9.366, -8.61, -6.949, -6.949, -9.366, -7.855, -7.855, -4.834, -4.834, -9.366, -9.366, -9.366, -9.366], "sector": "Consumo"}, "InRetail": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 24, 25, 26, 29, 30], "ret": [0.0, 1.994, 2.564, 13.96, 15.413, 16.809, 16.239, 16.809, 16.781, 15.385, 9.402, 7.664, 10.541, 5.413, 2.536, 6.838, 6.838, 8.262, 8.262, 6.838, 7.664, -0.598, 0.57, 0.57, 1.14, -0.855, 0.541, -0.285, -0.285, -3.105, -2.279, -0.228, -0.712, -0.684, -0.684, 1.282, -0.285, -0.285, -0.285, -0.285, 1.14, 2.564], "sector": "Consumo"}, "Pacasmayo": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 24, 25, 26, 29, 30], "ret": [0.0, -1.639, -0.729, 4.554, 5.829, 6.557, 6.193, 3.825, 2.186, 2.186, -2.914, -2.55, -3.461, -4.007, -3.461, 4.736, 3.825, 4.736, 5.647, 8.561, 9.472, 2.55, 3.097, 9.29, 10.2, 10.2, 9.836, 12.022, 12.204, 10.747, 10.2, -5.282, -6.193, -6.74, -10.2, -8.197, -7.104, -7.104, -8.015, -8.015, -9.29, -9.836], "sector": "Utilities"}, "Unacem": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 24, 25, 26, 29, 30], "ret": [0.0, 2.0, 1.333, 3.333, 6.667, 6.667, 2.667, 5.333, 4.0, 4.667, 2.0, -2.0, -3.333, -4.667, -5.333, 2.667, -2.0, -6.0, -4.667, -3.333, 3.333, -12.667, -7.333, -10.667, -11.333, -12.667, -14.0, -14.667, -18.0, -18.667, -18.0, -19.333, -20.0, -22.0, -22.0, -20.667, -8.667, -10.667, -12.0, -12.0, -13.333, -13.333], "sector": "Utilities"}, "Aenza": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 24, 25, 26, 29, 30], "ret": [0.0, 4.065, 3.252, 4.065, 4.878, 7.317, 3.252, 1.626, -2.439, -7.317, -9.756, -7.317, -9.756, -8.13, -13.008, -6.504, -4.878, -4.065, 5.691, 9.756, 12.195, 1.626, -2.439, -2.439, -10.569, -10.569, -13.008, -4.878, 12.195, 7.317, 4.878, -0.813, -5.691, -0.813, 2.439, 5.691, 5.691, 9.756, 9.756, 10.569, 10.569, 12.195], "sector": "Financial"}, "Ferreycorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9, -6, -5, -4, -3, -2, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 24, 25, 26, 29, 30], "ret": [0.0, -1.047, 0.0, 1.047, 3.665, 4.188, 0.524, -0.524, -0.524, 1.047, -2.094, -6.806, -8.901, -8.901, -16.23, -7.33, -8.901, -13.089, -10.995, -11.518, -7.33, -21.466, -22.513, -19.372, -16.754, -20.942, -20.419, -21.466, -24.084, -26.178, -25.131, -24.084, -25.131, -25.131, -28.272, -26.178, -19.372, -15.707, -19.372, -19.372, -18.325, -16.23], "sector": "Financial"}}}, "1V_2026": {"fecha": "2026-04-13", "empresas": {"Alicorp": {"dias": [-28, -27, -26, -25, -24, -21, -20, -19, -18, -17, -14, -13, -12, -7, -6, -5, -4, -3, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 21, 22, 23, 24, 25, 28, 29, 30], "ret": [0.0, 0.851, 0.851, -1.702, -0.17, -1.702, -1.617, -0.426, -1.277, -0.851, 0.17, -4.681, -0.426, -0.426, 0.426, 0.851, 0.851, 0.0, -0.426, -0.426, -2.383, -2.043, -3.83, -2.553, -2.553, -5.702, -4.851, -4.681, -4.681, -6.638, -6.809, -2.128, -5.191, -4.596, -3.404, -3.83, -4.0, -5.447, -5.106, -6.298], "sector": "Consumo"}, "InRetail": {"dias": [-28, -27, -26, -25, -24, -21, -20, -19, -18, -17, -14, -13, -12, -7, -6, -5, -4, -3, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 21, 22, 23, 24, 25, 28, 29, 30], "ret": [0.0, 0.18, -3.052, -4.488, -2.011, -2.011, -2.298, -0.898, -1.257, -3.052, -4.488, -3.411, -1.257, 1.257, 1.616, 3.411, 4.129, 5.027, 7.72, 2.334, 0.539, 3.411, -3.052, -2.693, -1.975, 0.0, 3.052, 5.601, 4.129, 4.057, 4.129, 4.129, 5.925, 7.72, 7.54, 6.643, 6.643, 6.14, 7.72, 8.294], "sector": "Consumo"}, "Pacasmayo": {"dias": [-28, -27, -26, -25, -24, -21, -20, -19, -18, -17, -14, -13, -12, -7, -6, -5, -4, -3, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 21, 22, 23, 24, 25, 28, 29, 30], "ret": [0.0, -0.568, -1.705, -4.545, -4.119, -1.989, -1.847, -0.568, -0.568, -1.278, -3.409, 2.131, 0.852, 0.852, 1.705, 2.131, 1.136, 1.562, 2.131, 1.847, 1.705, 1.705, 1.705, 3.267, 4.119, 3.693, 3.693, 3.409, 4.744, 3.821, 2.273, 3.849, 3.977, 1.562, 2.273, 1.847, 2.273, 2.983, 2.273, 1.42], "sector": "Utilities"}, "Unacem": {"dias": [-28, -27, -26, -25, -24, -21, -20, -19, -18, -17, -14, -13, -12, -7, -6, -5, -4, -3, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 21, 22, 23, 24, 25, 28, 29, 30], "ret": [0.0, 4.07, 2.326, 2.326, 2.326, 5.233, 3.488, 3.488, 1.744, 0.581, 0.581, 0.0, -0.581, -0.581, 0.0, 0.0, 1.744, 0.0, 1.744, 1.744, -4.07, -2.326, -2.907, -2.907, -2.907, -2.326, -2.907, -2.907, -2.907, -4.07, -4.012, -3.488, -1.163, -4.07, -4.07, -1.163, -2.326, -1.163, -1.163, -1.047], "sector": "Utilities"}, "Aenza": {"dias": [-28, -27, -26, -25, -24, -21, -20, -19, -18, -17, -14, -13, -12, -7, -6, -5, -4, -3, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 21, 22, 23, 24, 25, 28, 29, 30], "ret": [0.0, 1.302, 1.302, -2.344, -3.646, -3.646, -3.646, -5.99, -6.25, -1.302, -1.302, -1.302, -1.302, -1.302, -5.729, -7.552, -7.552, -7.552, -7.552, -7.552, -7.552, -7.552, -7.552, -15.104, -15.885, -15.885, -23.438, -21.875, -21.875, -21.875, -8.854, -8.854, -8.854, -8.854, -8.854, -8.854, -11.458, -11.458, -11.458, -11.458], "sector": "Financial"}, "Ferreycorp": {"dias": [-28, -27, -26, -25, -24, -21, -20, -19, -18, -17, -14, -13, -12, -7, -6, -5, -4, -3, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 14, 15, 16, 17, 21, 22, 23, 24, 25, 28, 29, 30], "ret": [0.0, 0.488, 0.0, -3.171, -4.39, -2.439, -2.439, -2.439, -2.439, -2.439, -1.22, 0.0, -0.976, 0.976, -1.707, -0.488, -0.244, -1.22, -0.732, -1.22, -3.415, -2.439, -4.878, -3.415, -4.146, -3.415, -3.415, -4.878, -4.878, -5.976, -7.805, -7.561, -7.707, -8.049, -7.976, -8.049, -8.537, -8.049, -8.61, -8.78], "sector": "Financial"}}}, "2V_2026": {"fecha": "2026-06-07", "empresas": {"Alicorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9], "ret": [0.0, -1.507, -1.152, -2.394, -1.596, -1.418, 1.507, 1.95, 1.95, 1.507, 2.394, 2.394, 0.798, 0.709, 0.621, 1.241], "sector": "Consumo"}, "InRetail": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9], "ret": [0.0, -0.471, 1.01, 1.549, 1.582, 1.01, 2.088, 1.01, -1.515, 1.01, 0.943, 0.673, -0.236, -0.101, -0.673, 0.0], "sector": "Consumo"}, "Pacasmayo": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9], "ret": [0.0, 0.694, 0.0, -0.833, -1.389, -0.972, -1.806, -1.806, -0.694, -1.944, -0.694, -0.972, -1.111, -1.111, -0.139, -0.556], "sector": "Utilities"}, "Unacem": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9], "ret": [0.0, 1.19, 1.19, 1.31, 2.381, 0.0, -1.726, -1.19, 0.595, 0.595, 2.976, 1.19, 1.429, 2.381, -1.19, 1.19], "sector": "Utilities"}, "Aenza": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9], "ret": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 14.412, 14.412, 14.412, 14.412, -5.882, -5.882, 1.471, 1.471], "sector": "Financial"}, "Ferreycorp": {"dias": [-30, -27, -26, -25, -24, -23, -20, -19, -18, -17, -16, -13, -12, -11, -10, -9], "ret": [0.0, 0.533, -0.08, -0.267, -1.6, -0.08, 0.8, -1.307, -0.347, -0.267, 0.0, -0.08, 0.0, 0.0, -0.267, -1.333], "sector": "Financial"}}}}, "s3s": {"1V_2016": {"Consumo": {"-5": 12.01, "0": 18.61, "5": 18.85, "10": 20.67, "20": 16.95}, "Utilities": {"-5": 6.68, "0": 18.21, "5": 23.81, "10": 35.4, "20": 37.37}, "Financial": {"-5": -1.7, "0": 5.33, "5": 27.03, "10": 46.12, "20": 45.41}}, "2V_2016": {"Consumo": {"-5": 0.42, "0": 0.03, "5": -1.03, "10": -2.19, "20": -3.64}, "Utilities": {"-5": -1.64, "0": -0.49, "5": -3.14, "10": -3.09, "20": -5.89}, "Financial": {"-5": 3.99, "0": 6.2, "5": 7.13, "10": 0.57, "20": 2.26}}, "1V_2021": {"Consumo": {"-5": -5.26, "0": -7.57, "5": -9.66, "10": -16.54, "20": -17.81}, "Utilities": {"-5": -4.69, "0": -6.71, "5": -8.87, "10": -17.99, "20": -12.78}, "Financial": {"-5": 2.35, "0": -0.69, "5": -4.23, "10": -19.57, "20": -21.23}}, "2V_2021": {"Consumo": {"-5": 2.09, "0": -6.57, "5": -2.47, "10": -2.94, "20": -3.29}, "Utilities": {"-5": -0.63, "0": -5.06, "5": -1.23, "10": -2.9, "20": -14.43}, "Financial": {"-5": -8.58, "0": -9.92, "5": -15.76, "10": -5.94, "20": -10.24}}, "1V_2026": {"Consumo": {"-5": 2.13, "0": 3.65, "5": -3.44, "10": -0.9, "20": 0.37}, "Utilities": {"-5": 1.07, "0": 1.94, "5": -0.6, "10": 0.39, "20": 1.41}, "Financial": {"-5": -4.02, "0": -4.14, "5": -6.22, "10": -13.43, "20": -8.28}}, "2V_2026": {}}, "s3e": ["Alicorp", "InRetail", "Pacasmayo", "Unacem", "Aenza", "Ferreycorp"], "s3sec": ["Consumo", "Financial", "Utilities"], "s3sm": {"Alicorp": "Consumo", "InRetail": "Consumo", "Pacasmayo": "Utilities", "Unacem": "Utilities", "Aenza": "Financial", "Ferreycorp": "Financial"}, "s3el": {"1V_2016": "2016-04-10", "2V_2016": "2016-06-05", "1V_2021": "2021-04-11", "2V_2021": "2021-06-06", "1V_2026": "2026-04-13", "2V_2026": "2026-06-07"}, "s4": {"prior_jp": 50.22, "kappa": 500, "a0": 251.1, "b0": 248.9, "vj": 5422339, "vf": 6037459, "tot": 11459798, "mu": 47.316, "sd": 0.0147, "ci_lo": 47.29, "ci_hi": 47.35, "p_jp": 0.0, "p_fp": 100.0, "pesc": 44.1, "ac_c": 6719, "ac_t": 15223, "xs": [47.228, 47.23, 47.231, 47.233, 47.235, 47.237, 47.238, 47.24, 47.242, 47.244, 47.246, 47.247, 47.249, 47.251, 47.253, 47.254, 47.256, 47.258, 47.26, 47.261, 47.263, 47.265, 47.267, 47.269, 47.27, 47.272, 47.274, 47.276, 47.277, 47.279, 47.281, 47.283, 47.284, 47.286, 47.288, 47.29, 47.292, 47.293, 47.295, 47.297, 47.299, 47.3, 47.302, 47.304, 47.306, 47.307, 47.309, 47.311, 47.313, 47.315, 47.316, 47.318, 47.32, 47.322, 47.323, 47.325, 47.327, 47.329, 47.33, 47.332, 47.334, 47.336, 47.338, 47.339, 47.341, 47.343, 47.345, 47.346, 47.348, 47.35, 47.352, 47.353, 47.355, 47.357, 47.359, 47.361, 47.362, 47.364, 47.366, 47.368, 47.369, 47.371, 47.373, 47.375, 47.376, 47.378, 47.38, 47.382, 47.384, 47.385, 47.387, 47.389, 47.391, 47.392, 47.394, 47.396, 47.398, 47.399, 47.401, 47.403, 47.405], "pdf": [1.5229979744716686e-08, 3.106450462380479e-08, 6.245622035313861e-08, 1.23775053928649e-07, 2.417890947676272e-07, 4.6557157157793565e-07, 8.836542241313934e-07, 1.6531962874281801e-06, 3.0486856336927476e-06, 5.541751233644487e-06, 9.929504305852775e-06, 1.7536958319472445e-05, 3.053002293466222e-05, 5.2389728858568324e-05, 8.861583426609028e-05, 0.00014774836023216984, 0.00024281760334158225, 0.00039335423136316496, 0.0006281070149769292, 0.0009886205206732336, 0.0015338106793246116, 0.002345632947167989, 0.0035358555015060807, 0.005253819200985154, 0.007694880818389836, 0.01110899653823677, 0.015808618705239388, 0.022174772724858748, 0.030659889794021292, 0.04178574609991935, 0.05613476283413611, 0.07433302085081166, 0.0970237000412588, 0.1248303079958271, 0.15831002262196597, 0.19789869908368643, 0.24385048692649886, 0.29617641665028943, 0.3545875485609812, 0.4184491089129785, 0.4867522559599768, 0.5581095554167553, 0.6307788205473412, 0.702717722868379, 0.7716686738745708, 0.8352702114111799, 0.8911878885041538, 0.9372548956126912, 0.9716107671891583, 0.9928258579038, 1.0, 0.9928258579038, 0.9716107671891583, 0.9372548956126912, 0.8911878885041538, 0.8352702114111799, 0.7716686738745708, 0.702717722868379, 0.6307788205473412, 0.5581095554167553, 0.4867522559599768, 0.4184491089129785, 0.3545875485609812, 0.29617641665028943, 0.24385048692649886, 0.19789869908368643, 0.15831002262196597, 0.1248303079958271, 0.0970237000412588, 0.07433302085081166, 0.05613476283413611, 0.04178574609991935, 0.030659889794021292, 0.022174772724858748, 0.015808618705239388, 0.01110899653823677, 0.007694880818389836, 0.005253819200985154, 0.0035358555015060807, 0.002345632947167989, 0.0015338106793246116, 0.0009886205206732336, 0.0006281070149769292, 0.00039335423136316496, 0.00024281760334158225, 0.00014774836023216984, 8.861583426609028e-05, 5.2389728858568324e-05, 3.053002293466222e-05, 1.7536958319472445e-05, 9.929504305852775e-06, 5.541751233644487e-06, 3.0486856336927476e-06, 1.6531962874281801e-06, 8.836542241313934e-07, 4.6557157157793565e-07, 2.417890947676272e-07, 1.23775053928649e-07, 6.245622035313861e-08, 3.106450462380479e-08, 1.5229979744716686e-08], "evol": [{"r": "AMAZONAS", "p_jp": 100.0, "p_fp": 0.0}, {"r": "ÁNCASH", "p_jp": 100.0, "p_fp": 0.0}, {"r": "APURÍMAC", "p_jp": 100.0, "p_fp": 0.0}, {"r": "AREQUIPA", "p_jp": 100.0, "p_fp": 0.0}, {"r": "AYACUCHO", "p_jp": 100.0, "p_fp": 0.0}, {"r": "CAJAMARCA", "p_jp": 100.0, "p_fp": 0.0}, {"r": "CALLAO", "p_jp": 100.0, "p_fp": 0.0}, {"r": "CUSCO", "p_jp": 100.0, "p_fp": 0.0}, {"r": "HUANCAVELICA", "p_jp": 100.0, "p_fp": 0.0}, {"r": "HUÁNUCO", "p_jp": 100.0, "p_fp": 0.0}, {"r": "ICA", "p_jp": 100.0, "p_fp": 0.0}, {"r": "JUNÍN", "p_jp": 100.0, "p_fp": 0.0}, {"r": "LA LIBERTAD", "p_jp": 100.0, "p_fp": 0.0}, {"r": "LAMBAYEQUE", "p_jp": 100.0, "p_fp": 0.0}, {"r": "LIMA", "p_jp": 0.0, "p_fp": 100.0}, {"r": "LORETO", "p_jp": 0.0, "p_fp": 100.0}, {"r": "MADRE DE DIOS", "p_jp": 0.0, "p_fp": 100.0}, {"r": "MOQUEGUA", "p_jp": 0.0, "p_fp": 100.0}, {"r": "PASCO", "p_jp": 0.0, "p_fp": 100.0}, {"r": "PIURA", "p_jp": 0.0, "p_fp": 100.0}, {"r": "PUNO", "p_jp": 0.0, "p_fp": 100.0}, {"r": "SAN MARTÍN", "p_jp": 0.0, "p_fp": 100.0}, {"r": "TACNA", "p_jp": 0.0, "p_fp": 100.0}, {"r": "TUMBES", "p_jp": 0.0, "p_fp": 100.0}, {"r": "UCAYALI", "p_jp": 0.0, "p_fp": 100.0}], "lider": "FP", "ventaja": 5.367}, "s5": {"curva_sob": {"years": [2026, 2028, 2029, 2031, 2032, 2033, 2034, 2035, 2037, 2039, 2040, 2042, 2055], "tirs": [3.957, 3.95, 4.218, 4.57, 5.079, 5.507, 3.71, 6.212, 6.672, 6.93, 6.957, 6.735, 6.65]}, "curva_sob_vac": {"years": [2030, 2035, 2040, 2046, 2054], "tirs": [1.383, 2.996, 3.62, 3.64, 3.768]}, "curva_bcrp": {"years": [2026, 2027], "tirs": [4.099, 4.052]}, "spread_data": [{"year": 2026, "corp": 4.502, "sob": 3.957, "spread": 0.545, "n": 38}, {"year": 2027, "corp": 4.442, "sob": 3.954, "spread": 0.489, "n": 29}, {"year": 2028, "corp": 4.553, "sob": 3.95, "spread": 0.603, "n": 10}, {"year": 2029, "corp": 4.8, "sob": 4.218, "spread": 0.582, "n": 9}, {"year": 2030, "corp": 5.174, "sob": 4.394, "spread": 0.78, "n": 4}, {"year": 2031, "corp": 5.603, "sob": 4.57, "spread": 1.033, "n": 4}, {"year": 2032, "corp": 5.718, "sob": 5.079, "spread": 0.639, "n": 2}, {"year": 2033, "corp": 6.085, "sob": 5.507, "spread": 0.578, "n": 3}, {"year": 2034, "corp": 6.254, "sob": 3.71, "spread": 2.544, "n": 3}, {"year": 2035, "corp": 6.208, "sob": 6.212, "spread": -0.004, "n": 6}, {"year": 2036, "corp": 3.107, "sob": 6.442, "spread": -3.335, "n": 2}, {"year": 2037, "corp": 6.547, "sob": 6.672, "spread": -0.125, "n": 1}, {"year": 2038, "corp": 6.996, "sob": 6.801, "spread": 0.195, "n": 4}, {"year": 2040, "corp": 7.609, "sob": 6.957, "spread": 0.652, "n": 1}, {"year": 2042, "corp": 6.811, "sob": 6.735, "spread": 0.076, "n": 1}, {"year": 2043, "corp": 7.402, "sob": 6.728, "spread": 0.674, "n": 1}, {"year": 2046, "corp": 7.375, "sob": 6.709, "spread": 0.666, "n": 1}], "scatter": [{"e": "BCRP", "n": "CD01OCT26", "tir": 4.086, "dur": 0.347, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD02JUL26", "tir": 4.113, "dur": 0.094, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD02SET27", "tir": 4.046, "dur": 1.281, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD03DIC26", "tir": 4.072, "dur": 0.522, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD03JUN26", "tir": 4.124, "dur": 0.014, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD03JUN27", "tir": 4.15, "dur": 1.028, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD04FEB27", "tir": 4.062, "dur": 0.697, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD05AGO27", "tir": 4.047, "dur": 1.203, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD05MAR27", "tir": 4.058, "dur": 0.778, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD05NOV26", "tir": 4.078, "dur": 0.444, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD07AGO26", "tir": 4.101, "dur": 0.194, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD07OCT27", "tir": 4.046, "dur": 1.378, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD08JUL27", "tir": 4.048, "dur": 1.125, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD09OCT26", "tir": 4.084, "dur": 0.369, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD09SET26", "tir": 4.091, "dur": 0.286, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD11AGO26", "tir": 4.1, "dur": 0.206, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD12NOV26", "tir": 4.076, "dur": 0.464, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD13MAY27", "tir": 4.051, "dur": 0.969, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD14AGO26", "tir": 4.099, "dur": 0.214, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD14JUL26", "tir": 4.109, "dur": 0.128, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD17JUL26", "tir": 4.108, "dur": 0.136, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD18AGO26", "tir": 4.098, "dur": 0.225, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD18JUN26", "tir": 4.118, "dur": 0.056, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD18NOV27", "tir": 4.125, "dur": 1.494, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD19NOV26", "tir": 4.075, "dur": 0.483, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD21ENE27", "tir": 4.064, "dur": 0.658, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD21JUL26", "tir": 4.106, "dur": 0.147, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD22OCT26", "tir": 4.081, "dur": 0.406, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD23JUN26", "tir": 4.116, "dur": 0.069, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD24JUL26", "tir": 4.105, "dur": 0.156, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD24JUL2D", "tir": 4.105, "dur": 0.156, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD24NOV26", "tir": 4.074, "dur": 0.497, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD25AGO2D", "tir": 4.095, "dur": 0.244, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD27AGO26", "tir": 4.126, "dur": 0.25, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD28OCT27", "tir": 4.045, "dur": 1.436, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD29ABR27", "tir": 4.052, "dur": 0.931, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "BCRP", "n": "CD30DIC26", "tir": 4.067, "dur": 0.597, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2026}, {"e": "BCRP", "n": "CD31MAR27", "tir": 4.055, "dur": 0.85, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "BCRP", "g": "Sin Rating", "yr": 2027}, {"e": "GOB.CENTRAL", "n": "SB12AGO26", "tir": 3.957, "dur": 0.208, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2026}, {"e": "GOB.CENTRAL", "n": "SB12AGO46", "tir": 3.64, "dur": 14.376, "sp": 0.0, "mon": "VAC", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2046}, {"e": "GOB.CENTRAL", "n": "SB12AGO37", "tir": 6.672, "dur": 7.974, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2037}, {"e": "GOB.CENTRAL", "n": "SB12AGO31", "tir": 4.57, "dur": 4.483, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2031}, {"e": "GOB.CENTRAL", "n": "SB12FEB42", "tir": 6.735, "dur": 9.842, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2042}, {"e": "GOB.CENTRAL", "n": "SB12FEB29", "tir": 4.331, "dur": 2.541, "sp": 0.107, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2029}, {"e": "GOB.CENTRAL", "n": "SB30MAY34", "tir": 1.52, "dur": 7.367, "sp": -4.399, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2034}, {"e": "GOB.CENTRAL", "n": "SB12FEB55", "tir": 6.65, "dur": 13.082, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2055}, {"e": "GOB.CENTRAL", "n": "SB12FEB54", "tir": 3.768, "dur": 18.009, "sp": 0.065, "mon": "VAC", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2054}, {"e": "GOB.CENTRAL", "n": "SB12FEB30", "tir": 1.383, "dur": 3.572, "sp": -0.098, "mon": "VAC", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2030}, {"e": "GOB.CENTRAL", "n": "SB12FEB40", "tir": 3.62, "dur": 11.211, "sp": -0.129, "mon": "VAC", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2040}, {"e": "GOB.CENTRAL", "n": "SB12AGO28", "tir": 3.95, "dur": 2.092, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2028}, {"e": "GOB.CENTRAL", "n": "SB12AGO32", "tir": 5.079, "dur": 5.27, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2032}, {"e": "GOB.CENTRAL", "n": "SB12FEB29E", "tir": 4.104, "dur": 2.543, "sp": 0.317, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2029}, {"e": "GOB.CENTRAL", "n": "SB12AGO34", "tir": 5.899, "dur": 6.695, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2034}, {"e": "GOB.CENTRAL", "n": "SB12AGO40", "tir": 6.957, "dur": 9.717, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2040}, {"e": "GOB.CENTRAL", "n": "SB12AGO33", "tir": 5.507, "dur": 5.786, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2033}, {"e": "GOB.CENTRAL", "n": "SB12AGO39", "tir": 6.93, "dur": 8.643, "sp": 0.0, "mon": "PEN", "rat": "BBB-", "tipo": "Soberano", "g": "Investment Grade", "yr": 2039}, {"e": "GOB.CENTRAL", "n": "SB12AGO35", "tir": 6.212, "dur": 6.999, "sp": 0.0, "mon": "PEN", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2035}, {"e": "GOB.CENTRAL", "n": "SB31ENE35", "tir": 2.996, "dur": 6.854, "sp": 0.0, "mon": "VAC", "rat": "", "tipo": "Soberano", "g": "Sin Rating", "yr": 2035}, {"e": "COFIDE", "n": "COFI3DBC9A", "tir": 4.433, "dur": 0.878, "sp": 0.488, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "COFIDE", "n": "COF3DBC10A", "tir": 6.547, "dur": 4.493, "sp": 0.531, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2037}, {"e": "COFIDE", "n": "COF3DBC11A", "tir": 6.811, "dur": 7.749, "sp": 0.573, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2042}, {"e": "COFIDE", "n": "COFI4DBC2A", "tir": 7.402, "dur": 10.529, "sp": 0.609, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2043}, {"e": "COFIDE", "n": "COF4DBC10A", "tir": 4.506, "dur": 0.353, "sp": 0.491, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "COFIDE", "n": "COF4DBC10B", "tir": 4.492, "dur": 0.413, "sp": 0.491, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "COFIDE", "n": "COF4DBC11A", "tir": 7.375, "dur": 10.636, "sp": 0.61, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2046}, {"e": "COFIDE", "n": "COFI5DBC2A", "tir": 2.183, "dur": 3.034, "sp": 1.012, "mon": "VAC", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "COFIDE", "n": "ZCOF5DCP1A", "tir": 4.56, "dur": 0.408, "sp": 0.491, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "COFIDE", "n": "SCOF4DCP4A", "tir": 4.56, "dur": 0.544, "sp": 0.49, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "COFIDE", "n": "SCOF4DCP4B", "tir": 4.553, "dur": 0.642, "sp": 0.489, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "CONTINENTAL", "n": "BBVA1BS3A", "tir": 2.953, "dur": 5.521, "sp": 0.544, "mon": "VAC", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2032}, {"e": "CONTINENTAL", "n": "BBVA2BS2A", "tir": 3.078, "dur": 5.932, "sp": 0.545, "mon": "VAC", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2032}, {"e": "CONTINENTAL", "n": "BBVA2BS3A", "tir": 4.229, "dur": 1.686, "sp": 0.327, "mon": "USD", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "CONTINENTAL", "n": "BBVA2BS6A", "tir": 3.336, "dur": 6.56, "sp": 0.544, "mon": "VAC", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}, {"e": "CONTINENTAL", "n": "BBVA6BS1A", "tir": 6.646, "dur": 8.321, "sp": 0.239, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2038}, {"e": "CONTINENTAL", "n": "BBVA5BC2A", "tir": 4.791, "dur": 0.549, "sp": 0.816, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "CONTINENTAL", "n": "BBVA4CD1A", "tir": 4.572, "dur": 0.242, "sp": 0.476, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Banco BCI Peru", "n": "BCIP1DBC1A", "tir": 4.704, "dur": 2.493, "sp": 0.503, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "Banco BCI Peru", "n": "BCIPE1CD1B", "tir": 4.604, "dur": 0.019, "sp": 0.481, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Banco BCI Peru", "n": "BCIPE1CD4A", "tir": 4.562, "dur": 0.369, "sp": 0.478, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "LA NACION", "n": "BN1BS1A", "tir": 7.422, "dur": 4.537, "sp": 2.346, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2031}, {"e": "INTERAMERICANO", "n": "BIF2BS2A", "tir": 6.478, "dur": 1.387, "sp": 2.623, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "INTERAMERICANO", "n": "BIF2BS2B", "tir": 6.484, "dur": 1.466, "sp": 2.619, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "INTERAMERICANO", "n": "BIF3BS2A", "tir": 6.947, "dur": 2.551, "sp": 2.718, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "INTERAMERICANO", "n": "BIF5CD1F", "tir": 4.502, "dur": 0.067, "sp": 0.385, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "INTERAMERICANO", "n": "BIF5CD1G", "tir": 4.487, "dur": 0.222, "sp": 0.385, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "INTERAMERICANO", "n": "BIF5CD1H", "tir": 4.47, "dur": 0.514, "sp": 0.386, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "INTERAMERICANO", "n": "BIF5CD1I", "tir": 4.465, "dur": 0.667, "sp": 0.387, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "INTERAMERICANO", "n": "BIF5CD1J", "tir": 4.463, "dur": 0.917, "sp": 0.388, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "INTERAMERICANO", "n": "BIF5CD1K", "tir": 4.469, "dur": 0.994, "sp": 0.389, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "Banco Pichincha", "n": "BPICH1BS1A", "tir": 9.772, "dur": 1.979, "sp": 5.694, "mon": "PEN", "rat": "A+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Caja Cusco", "n": "CMCUS1CD3B", "tir": 4.848, "dur": 0.411, "sp": 0.768, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "CMAC Arequipa", "n": "SCMAQ0BS1U", "tir": 9.734, "dur": 2.308, "sp": 5.56, "mon": "PEN", "rat": "A+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "CMAC Arequipa", "n": "CMAQ1CD3D", "tir": 4.546, "dur": 0.397, "sp": 0.465, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "CMAC Arequipa", "n": "CMAQ1CD3E", "tir": 4.513, "dur": 0.758, "sp": 0.454, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "CMAC Arequipa", "n": "CMAQ1CD3F", "tir": 4.503, "dur": 0.917, "sp": 0.45, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "MIBANCO", "n": "MIBAN4BS1A", "tir": 5.82, "dur": 4.318, "sp": 0.926, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2031}, {"e": "MIBANCO", "n": "MIBAN5BS1A", "tir": 6.186, "dur": 6.755, "sp": 0.256, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "MIBANCO", "n": "MIBAN5BS1B", "tir": 6.14, "dur": 7.015, "sp": 0.117, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "MIBANCO", "n": "MIBAN5BS2A", "tir": 6.215, "dur": 7.327, "sp": 0.095, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2036}, {"e": "MIBANCO", "n": "MIBAN5CD1A", "tir": 4.502, "dur": 0.064, "sp": 0.385, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "MIBANCO", "n": "MIBAN5CD1B", "tir": 4.462, "dur": 0.311, "sp": 0.374, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "MIBANCO", "n": "MIBAN5CD1C", "tir": 4.444, "dur": 0.453, "sp": 0.367, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "MIBANCO", "n": "MIBAN5CD1D", "tir": 4.406, "dur": 0.822, "sp": 0.35, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "SCOTIABANK", "n": "SCOTI1CD1A", "tir": 4.356, "dur": 0.956, "sp": 0.304, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "LEAS TOTAL", "n": "TOTAS1BS1A", "tir": 10.684, "dur": 3.064, "sp": 6.441, "mon": "USD", "rat": "A", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "LEAS TOTAL", "n": "TOTAS6BA3A", "tir": 7.596, "dur": 1.416, "sp": 3.637, "mon": "USD", "rat": "AA-", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "LEAS TOTAL", "n": "TOTAS6BA4A", "tir": 7.792, "dur": 1.865, "sp": 3.677, "mon": "USD", "rat": "AA-", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "LEAS TOTAL", "n": "TOTAS6BA6A", "tir": 7.878, "dur": 2.413, "sp": 3.671, "mon": "USD", "rat": "AA-", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2031}, {"e": "BANCO FALABELLA", "n": "BFAL7CD1E", "tir": 4.53, "dur": 0.331, "sp": 0.437, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "BANCO FALABELLA", "n": "BFAL7CD2A", "tir": 4.518, "dur": 0.564, "sp": 0.439, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "BANCO FALABELLA", "n": "BFAL7CD2B", "tir": 4.511, "dur": 0.883, "sp": 0.443, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "BANCO FALABELLA", "n": "BFAL7CD2C", "tir": 4.51, "dur": 0.9, "sp": 0.443, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "BANCO FALABELLA", "n": "BFAL7CD2D", "tir": 4.531, "dur": 0.997, "sp": 0.444, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "BCO RIPLEY", "n": "BRIPL6CD2A", "tir": 4.849, "dur": 0.372, "sp": 0.766, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "INTERBANK", "n": "INTER2BC5A", "tir": 1.822, "dur": 2.745, "sp": 0.849, "mon": "VAC", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "INTERBANK", "n": "INTER2CD1D", "tir": 4.5, "dur": 0.097, "sp": 0.387, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "INTERBANK", "n": "INTER2CD1E", "tir": 4.477, "dur": 0.292, "sp": 0.387, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "INTERBANK", "n": "INTER2CD1F", "tir": 4.442, "dur": 0.956, "sp": 0.39, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "INTERBANK", "n": "INTER2CD1G", "tir": 4.469, "dur": 1.0, "sp": 0.39, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "Compartamos Ban", "n": "COMPA3CD3B", "tir": 4.552, "dur": 0.261, "sp": 0.459, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Compartamos Ban", "n": "COMPA3CD3C", "tir": 4.508, "dur": 0.728, "sp": 0.448, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "Financiera Efec", "n": "EFECT2CD2B", "tir": 4.46, "dur": 0.708, "sp": 0.387, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "Financiera Efec", "n": "EFECT2CD2C", "tir": 4.469, "dur": 0.997, "sp": 0.382, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "Fond Mivivienda", "n": "FMV1BC4A", "tir": 4.436, "dur": 0.125, "sp": 0.366, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "Fond Mivivienda", "n": "FMV1BC5A", "tir": 4.433, "dur": 0.136, "sp": 0.365, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "Fond Mivivienda", "n": "FMV1BC6A", "tir": 4.351, "dur": 0.63, "sp": 0.362, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "Fond Mivivienda", "n": "SFMV2BC1A", "tir": 5.386, "dur": 4.403, "sp": 0.313, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2031}, {"e": "Fond Mivivienda", "n": "SFMV2BC2A", "tir": 5.692, "dur": 5.161, "sp": 0.304, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2032}, {"e": "Fond Mivivienda", "n": "SFMV2BC3A", "tir": 6.495, "dur": 7.104, "sp": 0.305, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "CMAC Huancayo", "n": "CMHU2CD2A", "tir": 5.004, "dur": 0.408, "sp": 0.923, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "GNB Perú", "n": "GNB1BS1A", "tir": 8.65, "dur": 0.411, "sp": 4.895, "mon": "USD", "rat": "AA-", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "GNB Perú", "n": "GNB3CD2A", "tir": 4.491, "dur": 0.083, "sp": 0.376, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "GNB Perú", "n": "GNB3CD2B", "tir": 4.455, "dur": 0.331, "sp": 0.368, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "GNB Perú", "n": "GNB3CD2C", "tir": 4.402, "dur": 0.864, "sp": 0.348, "mon": "PEN", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "Mitsui Auto Fin", "n": "MAF1BC2U", "tir": 4.914, "dur": 1.869, "sp": 0.88, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Santander Consu", "n": "SANTC6CD1A", "tir": 4.627, "dur": 0.1, "sp": 0.515, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Santander Consu", "n": "SANTC6CD1B", "tir": 4.594, "dur": 0.358, "sp": 0.51, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "EDP San Con", "n": "ECSCP1BC4A", "tir": 4.514, "dur": 2.38, "sp": 0.344, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "EDP San Con", "n": "ECSCP3CP1A", "tir": 4.456, "dur": 0.039, "sp": 0.335, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "EDP San Con", "n": "ECSCP3CP1B", "tir": 4.423, "dur": 0.294, "sp": 0.333, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "EDP San Con", "n": "ECSCP3CP2A", "tir": 4.405, "dur": 0.486, "sp": 0.331, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "EDP San Con", "n": "ECSCP3CP2B", "tir": 4.39, "dur": 0.703, "sp": 0.328, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "EDP San Con", "n": "ECSCP3CP2C", "tir": 4.383, "dur": 0.819, "sp": 0.327, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "EDP San Con", "n": "ECSCP2CP3E", "tir": 4.379, "dur": 0.917, "sp": 0.326, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "A&G Chavin", "n": "CHAVI3CP1A", "tir": 5.935, "dur": 0.153, "sp": 2.252, "mon": "USD", "rat": "CP-2", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "A&G Chavin", "n": "CHAVI3CP1B", "tir": 5.969, "dur": 0.406, "sp": 2.244, "mon": "USD", "rat": "CP-2", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "A&G Chavin", "n": "CHAVI3CP1C", "tir": 5.986, "dur": 0.522, "sp": 2.24, "mon": "USD", "rat": "CP-2", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "A&G Chavin", "n": "CHAVI3CP1D", "tir": 6.004, "dur": 0.639, "sp": 2.236, "mon": "USD", "rat": "CP-2", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "ALICORP S.A.", "n": "ALICO3BC2A", "tir": 4.454, "dur": 1.789, "sp": 0.225, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "ALICORP S.A.", "n": "ALIC1DBC3A", "tir": 6.453, "dur": 6.885, "sp": 0.403, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "PACASMAYO S.A.A", "n": "CPACA2BC1A", "tir": 4.846, "dur": 2.49, "sp": 0.636, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "PACASMAYO S.A.A", "n": "CPACA2BC2A", "tir": 5.751, "dur": 4.585, "sp": 0.604, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2034}, {"e": "GLORIA", "n": "GLOR1BC4A", "tir": 6.23, "dur": 5.96, "sp": 0.57, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "SURPACK S.A.", "n": "SURPA1CP1A", "tir": 6.035, "dur": 0.375, "sp": 2.315, "mon": "USD", "rat": "CP-2-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "SURPACK S.A.", "n": "SURPA1CP1B", "tir": 6.083, "dur": 0.747, "sp": 2.294, "mon": "USD", "rat": "CP-2-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "SURPACK S.A.", "n": "SURPA1CP1C", "tir": 6.105, "dur": 0.903, "sp": 2.284, "mon": "USD", "rat": "CP-2-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "YURA", "n": "YURA4BC1A", "tir": 5.248, "dur": 2.063, "sp": 0.971, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "YURA", "n": "YURA4BC2A", "tir": 7.609, "dur": 7.936, "sp": 1.283, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2040}, {"e": "YURA", "n": "YURA4BC3A", "tir": 6.085, "dur": 3.488, "sp": 1.14, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}, {"e": "INTERSEGURO", "n": "INTSE3BS4A", "tir": 6.762, "dur": 6.235, "sp": 1.912, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2034}, {"e": "INTERSEGURO", "n": "INTSE4BS1A", "tir": 6.644, "dur": 6.694, "sp": 1.75, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2034}, {"e": "INTERSEGURO", "n": "INTSE4BS1B", "tir": 6.555, "dur": 6.878, "sp": 1.624, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "INTERSEGURO", "n": "INTSE4BS1C", "tir": 6.499, "dur": 7.265, "sp": 1.515, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "Pacífico Seguro", "n": "PACIF2BS2A", "tir": 5.256, "dur": 4.147, "sp": 0.827, "mon": "USD", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "Pacífico Seguro", "n": "PACIF2BS2B", "tir": 6.941, "dur": 5.493, "sp": 2.215, "mon": "USD", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}, {"e": "Pacífico Seguro", "n": "PACIF3BS1A", "tir": 6.069, "dur": 7.315, "sp": 1.063, "mon": "USD", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "Pluz Energía", "n": "PLUZ4BC11A", "tir": 5.743, "dur": 5.15, "sp": 0.501, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2032}, {"e": "Pluz Energía", "n": "PLUZ4BC12A", "tir": 5.987, "dur": 5.68, "sp": 0.52, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}, {"e": "Pluz Energía", "n": "PLUZ5BC5A", "tir": 6.986, "dur": 8.325, "sp": 0.554, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2038}, {"e": "Pluz Energía", "n": "PLUZ5BC8A", "tir": 7.007, "dur": 8.545, "sp": 0.553, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2038}, {"e": "Pluz Energía", "n": "PLUZ5BC19A", "tir": 4.654, "dur": 2.575, "sp": 0.414, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "Pluz Energía", "n": "PLUZ6BC3A", "tir": 4.436, "dur": 1.91, "sp": 0.394, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Pluz Energía", "n": "PLUZ6BC4A", "tir": 4.314, "dur": 1.099, "sp": 0.371, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "Pluz Energía", "n": "PLUZ6BC5A", "tir": 4.415, "dur": 1.825, "sp": 0.391, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Pluz Energía", "n": "PLUZ7BC3A", "tir": 4.591, "dur": 2.425, "sp": 0.41, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Pluz Energía", "n": "PLUZ7BC4A", "tir": 6.209, "dur": 6.049, "sp": 0.531, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}, {"e": "Pluz Energía", "n": "PLUZ7BC3B", "tir": 4.641, "dur": 2.594, "sp": 0.415, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "Pluz Energía", "n": "PLUZ7BC4B", "tir": 6.254, "dur": 6.218, "sp": 0.535, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2034}, {"e": "Pluz Energía", "n": "PLUZ6PC1A", "tir": 4.5, "dur": 0.119, "sp": 0.39, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Pluz Energía", "n": "PLUZ6PC1B", "tir": 4.49, "dur": 0.192, "sp": 0.389, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Pluz Energía", "n": "PLUZ6PC2A", "tir": 4.433, "dur": 0.825, "sp": 0.377, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "ElectroDunas", "n": "EDUN1DBC1A", "tir": 5.925, "dur": 4.102, "sp": 1.119, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "Engie Energía P", "n": "ENGIE1BC3U", "tir": 6.31, "dur": 1.91, "sp": 2.357, "mon": "USD", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Engie Energía P", "n": "ENGIE3BC1A", "tir": 4.283, "dur": 0.069, "sp": 0.183, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "Engie Energía P", "n": "ENGIE3BC3A", "tir": 4.212, "dur": 1.048, "sp": 0.27, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "Engie Energía P", "n": "ENGIE3BC3B", "tir": 4.394, "dur": 1.917, "sp": 0.337, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "LUZ DEL SUR", "n": "LUSUR3BC3A", "tir": 4.757, "dur": 3.044, "sp": 0.362, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "LUZ DEL SUR", "n": "LUSUR3BC2A", "tir": 4.312, "dur": 0.269, "sp": 0.275, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "LUZ DEL SUR", "n": "LUSUR3BC6A", "tir": 4.245, "dur": 1.482, "sp": 0.27, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "LUZ DEL SUR", "n": "LUSUR3BC7A", "tir": 4.453, "dur": 2.298, "sp": 0.31, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "LUZ DEL SUR", "n": "LUSUR4BC1A", "tir": 6.504, "dur": 6.879, "sp": 0.602, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2034}, {"e": "LUZ DEL SUR", "n": "LUSUR4BC2A", "tir": 4.8, "dur": 3.18, "sp": 0.368, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "LUZ DEL SUR", "n": "LUSUR4BC3A", "tir": 4.835, "dur": 3.191, "sp": 0.372, "mon": "PEN", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "LUZ DEL SUR", "n": "LUSUR5CP1A", "tir": 4.311, "dur": 0.883, "sp": 0.257, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "LUZ DEL SUR", "n": "LUSUR5CP1B", "tir": 4.308, "dur": 0.961, "sp": 0.256, "mon": "PEN", "rat": "CP-1+", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2027}, {"e": "REP", "n": "REP3BC4A", "tir": 5.886, "dur": 4.357, "sp": 1.415, "mon": "USD", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2031}, {"e": "TELEFONICA", "n": "TELE4BC19A", "tir": 0.0, "dur": 3.311, "sp": 79.756, "mon": "VAC", "rat": "C", "tipo": "Corporativo", "g": "Speculative Grade", "yr": 2027}, {"e": "TELEFONICA", "n": "TELE4BC19B", "tir": 0.0, "dur": 3.563, "sp": 73.816, "mon": "VAC", "rat": "D", "tipo": "Corporativo", "g": "Speculative Grade", "yr": 2028}, {"e": "TELEFONICA", "n": "TELE4BC37A", "tir": 0.0, "dur": 3.565, "sp": 72.977, "mon": "VAC", "rat": "D", "tipo": "Corporativo", "g": "Speculative Grade", "yr": 2028}, {"e": "TELEFONICA", "n": "TELE4BC19C", "tir": 0.0, "dur": 3.533, "sp": 71.775, "mon": "VAC", "rat": "C", "tipo": "Corporativo", "g": "Speculative Grade", "yr": 2028}, {"e": "TELEFONICA", "n": "TDP6BC17A", "tir": 0.0, "dur": 2.206, "sp": 61.99, "mon": "VAC", "rat": "D", "tipo": "Corporativo", "g": "Speculative Grade", "yr": 2030}, {"e": "Jockey Plaza", "n": "JPLAZ1BC1A", "tir": 5.781, "dur": 2.128, "sp": 1.619, "mon": "USD", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "Jockey Plaza", "n": "JPLAZ1BC2A", "tir": 5.099, "dur": 2.114, "sp": 0.731, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "Jockey Plaza", "n": "JPLAZ1BC3A", "tir": 5.221, "dur": 2.529, "sp": 0.737, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2031}, {"e": "Bosques Amazóni", "n": "XBAM1BC1A", "tir": 9.284, "dur": 0.58, "sp": 5.508, "mon": "USD", "rat": "A-", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "Cineplex", "n": "CINEP2BC1A", "tir": 6.03, "dur": 0.103, "sp": 1.942, "mon": "PEN", "rat": "AA-", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2026}, {"e": "LOS PORTALES", "n": "PORTA3CP1G", "tir": 5.334, "dur": 0.067, "sp": 1.217, "mon": "PEN", "rat": "CP-1-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "FacTotal", "n": "FACTO1PC3B", "tir": 5.397, "dur": 0.133, "sp": 1.717, "mon": "USD", "rat": "CP-1", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "H2Olmos", "n": "AH2OL1BC2U", "tir": 4.203, "dur": 3.139, "sp": 2.635, "mon": "VAC", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2032}, {"e": "INCIMMET", "n": "INCIM1CP1B", "tir": 5.98, "dur": 0.444, "sp": 2.248, "mon": "USD", "rat": "CP-2-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Inverfal", "n": "INVFA1BC1A", "tir": 6.011, "dur": 3.892, "sp": 0.811, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2035}, {"e": "Inverfal", "n": "INVFA2BC1A", "tir": 4.815, "dur": 1.422, "sp": 0.731, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "Inverfal", "n": "INVFA2BC2A", "tir": 4.697, "dur": 1.649, "sp": 0.701, "mon": "PEN", "rat": "AA+", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Norvial", "n": "RVIA51BC2U", "tir": 5.159, "dur": 0.403, "sp": 1.169, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2027}, {"e": "SYRUS DIST PERU", "n": "SYRUS1CP1C", "tir": 6.06, "dur": 0.203, "sp": 2.369, "mon": "USD", "rat": "CP-2-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "SYRUS DIST PERU", "n": "SYRUS1CP1D", "tir": 6.0, "dur": 0.542, "sp": 2.34, "mon": "USD", "rat": "CP-2-", "tipo": "Corporativo", "g": "Corto Plazo", "yr": 2026}, {"e": "Credicorp Capit", "n": "CRE1TATN2A", "tir": 4.977, "dur": 1.197, "sp": 1.074, "mon": "USD", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2028}, {"e": "Credicorp Capit", "n": "CRE1TATN3A", "tir": 6.625, "dur": 6.373, "sp": 1.517, "mon": "USD", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2039}, {"e": "SCOTIA ST", "n": "SCO1TRYT1A", "tir": 5.057, "dur": 1.97, "sp": 0.962, "mon": "USD", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2030}, {"e": "SCOTIA ST", "n": "SCO1TRYT2A", "tir": 6.274, "dur": 7.151, "sp": 1.167, "mon": "USD", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2043}, {"e": "SCOTIA ST", "n": "SCOT1TPN1A", "tir": 7.412, "dur": 5.731, "sp": 1.683, "mon": "PEN", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2038}, {"e": "SCOTIA ST", "n": "SCOT1TPN2A", "tir": 3.485, "dur": 6.137, "sp": 0.746, "mon": "VAC", "rat": "AA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2038}, {"e": "Rutas de Lima", "n": "RUTADELIMA", "tir": 0.0, "dur": 0.0, "sp": 13.295, "mon": "PEN", "rat": "D", "tipo": "Corporativo", "g": "Speculative Grade", "yr": 2036}, {"e": "Taboada FL", "n": "TABOADA1N", "tir": 1.622, "dur": 1.336, "sp": 1.737, "mon": "VAC", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "Taboada FL", "n": "TABOADA1NP", "tir": 1.622, "dur": 1.336, "sp": 1.737, "mon": "VAC", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2029}, {"e": "Taboada FL", "n": "TABOADA2N", "tir": 3.424, "dur": 4.042, "sp": 1.585, "mon": "VAC", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}, {"e": "Taboada FL", "n": "TABOADA3N", "tir": 3.971, "dur": 5.19, "sp": 1.578, "mon": "VAC", "rat": "AAA", "tipo": "Corporativo", "g": "Investment Grade", "yr": 2033}], "resumen": {"Soberano": {"PEN": {"tir_med": 5.507, "tir_min": 1.52, "tir_max": 6.957, "n": 15}, "VAC": {"tir_med": 3.62, "tir_min": 1.383, "tir_max": 3.768, "n": 5}}, "BCRP": {"PEN": {"tir_med": 4.085, "tir_min": 4.045, "tir_max": 4.15, "n": 38}}, "Corporativo": {"PEN": {"tir_med": 4.553, "tir_min": 0.0, "tir_max": 9.772, "n": 119}, "USD": {"tir_med": 6.094, "tir_min": 4.229, "tir_max": 10.684, "n": 34}, "VAC": {"tir_med": 2.002, "tir_min": 0.0, "tir_max": 4.203, "n": 16}}}, "ult": "2026-05-29"}};
+const S1=D.s1, S2=D.s2, S3v=D.s3v, S3s=D.s3s, S3e=D.s3e, S3sec=D.s3sec, S3sm=D.s3sm, S4=D.s4, S5=D.s5;
+
+// Paleta AFP Integra
+const NAVY='#1E2E6E', TEAL='#00AECB', YELLOW='#E3E829', GRAY1='#DCDDDE', GRAY2='#7E8083';
+const CJP='#22c55e', CFP='#f97316', CJPl='rgba(34,197,94,0.15)', CFPl='rgba(249,115,22,0.15)';
+const CGREEN='#2ec97a', CRED='#e84343', CAMBER='#e0a320';
+
+Chart.defaults.color='#6b7a99';
+Chart.defaults.borderColor='#E2E6EF';
+Chart.defaults.font.family="'Segoe UI',Arial,sans-serif";
+Chart.defaults.font.size=11;
+
+const fmt=(n,d=2)=>n==null?'—':Number(n).toFixed(d);
+const fmtN=n=>n==null?'—':Number(n).toLocaleString('es-PE');
+
+// ── S1 ─────────────────────────────────────────────────────────
+function initS1(){
+  const r=S1;
+  const ac=r.regiones.reduce((s,x)=>s+(x.actas_cont||0),0);
+  const at=r.regiones.reduce((s,x)=>s+(x.actas_tot||0),0);
+  if(at>0){
+    document.getElementById('sc-actas-pct').textContent=(ac/at*100).toFixed(1)+'%';
+    document.getElementById('sc-actas-n').textContent=fmtN(ac)+' / '+fmtN(at);
+  }
+
+  if(!r.regiones||!r.regiones.length) return;
+
+  const regs=[...r.regiones].sort((a,b)=>b.pct_jp-a.pct_jp);
+  new Chart(document.getElementById('cRegiones'),{
+    type:'bar',
+    data:{
+      labels:regs.map(x=>x.nombre),
+      datasets:[
+        {label:'JP %',data:regs.map(x=>x.pct_jp),backgroundColor:regs.map(x=>x.ganador==='JP'?CJP:'rgba(34,197,94,.35)'),borderRadius:3},
+        {label:'FP %',data:regs.map(x=>-x.pct_fp),backgroundColor:regs.map(x=>x.ganador==='FP'?CFP:'rgba(249,115,22,.35)'),borderRadius:3},
+      ]
+    },
+    options:{
+      indexAxis:'y',responsive:true,
+      plugins:{legend:{position:'top'},
+        tooltip:{callbacks:{label:c=>c.datasetIndex===0?'JP: '+c.raw.toFixed(2)+'%':'FP: '+Math.abs(c.raw).toFixed(2)+'%'}}},
+      scales:{
+        x:{ticks:{callback:v=>Math.abs(v)+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+        y:{ticks:{font:{size:10}}}
+      }
+    }
+  });
+
+  const ra=[...r.regiones].sort((a,b)=>b.pct_actas-a.pct_actas);
+  new Chart(document.getElementById('cActas'),{
+    type:'bar',
+    data:{
+      labels:ra.map(x=>x.nombre),
+      datasets:[{
+        label:'% actas contabilizadas',
+        data:ra.map(x=>x.pct_actas),
+        backgroundColor:ra.map(x=>x.pct_actas>80?'rgba(46,201,122,.7)':x.pct_actas>40?'rgba(224,163,32,.7)':'rgba(232,67,67,.7)'),
+        borderRadius:3,
+      }]
+    },
+    options:{
+      indexAxis:'y',responsive:true,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{max:100,ticks:{callback:v=>v+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+        y:{ticks:{font:{size:10}}}
+      }
+    }
+  });
+}
+
+// ── S2 ─────────────────────────────────────────────────────────
+function initS2(){
+  const dat=S2.datum, ips=S2.ipsos;
+  const ce=document.getElementById('enc-cards');
+
+  [dat,ips].forEach(d=>{
+    const jpFill=d.jp>50?CJP:NAVY;
+    const fpFill=d.fp>50?CFP:NAVY;
+    ce.innerHTML+=`
+    <div class="enc-card">
+      <div class="enc-header">
+        <div class="enc-header-name">${d.fuente}</div>
+        <div class="enc-header-sub">${d.muestra} · Error ±${d.error}pp · 07/06/2026</div>
+      </div>
+      <div class="enc-body">
+        <div class="enc-veredicto">${d.veredicto}</div>
+        <div class="enc-row">
+          <div class="enc-cand">
+            <div class="enc-cand-lbl">JP — Juntos por el Perú</div>
+            <div class="enc-cand-pct jp">${d.jp.toFixed(2)}%</div>
+            <div style="font-size:10px;color:var(--muted)">[${(d.jp_min||d.jp-d.error).toFixed(2)}% — ${(d.jp_max||d.jp+d.error).toFixed(2)}%]</div>
+          </div>
+          <div style="font-size:24px;font-weight:300;color:var(--muted);padding:0 12px">vs</div>
+          <div class="enc-cand" style="text-align:right">
+            <div class="enc-cand-lbl">FP — Fuerza Popular</div>
+            <div class="enc-cand-pct fp">${d.fp.toFixed(2)}%</div>
+            <div style="font-size:10px;color:var(--muted)">[${(d.fp_min||d.fp-d.error).toFixed(2)}% — ${(d.fp_max||d.fp+d.error).toFixed(2)}%]</div>
+          </div>
+        </div>
+        <div class="enc-bar">
+          <div class="enc-bar-jp" style="width:${d.jp}%;background:linear-gradient(90deg,${CJP},${CFP})"></div>
+        </div>
+      </div>
+    </div>`;
+  });
+
+  // Datum IC
+  new Chart(document.getElementById('cDatIC'),{
+    type:'bar',
+    data:{
+      labels:['JP — Juntos por el Perú','FP — Fuerza Popular'],
+      datasets:[
+        {label:'Resultado CR',data:[dat.jp,dat.fp],backgroundColor:[CJP,CFP],borderRadius:4,borderSkipped:false},
+        {label:'IC mín',data:[dat.jp_min,dat.fp_min],backgroundColor:['rgba(34,197,94,.2)','rgba(249,115,22,.2)'],borderRadius:2},
+        {label:'IC máx',data:[dat.jp_max,dat.fp_max],backgroundColor:['rgba(34,197,94,.15)','rgba(249,115,22,.15)'],borderRadius:2},
+      ]
+    },
+    options:{
+      indexAxis:'y',responsive:true,
+      plugins:{legend:{position:'top'},
+        annotation:{annotations:{l50:{type:'line',xMin:50,xMax:50,borderColor:'rgba(0,0,0,.4)',borderWidth:1,borderDash:[4,4],
+          label:{display:true,content:'50%',position:'start',color:'#555',font:{size:9}}}}}},
+      scales:{x:{min:46,max:54,ticks:{callback:v=>v.toFixed(1)+'%'},grid:{color:'rgba(0,0,0,.05)'}}},
+    }
+  });
+
+  // Ipsos desagregado
+  const iZ=Object.keys(ips.desagregado);
+  new Chart(document.getElementById('cIpsos'),{
+    type:'bar',
+    data:{
+      labels:iZ,
+      datasets:[
+        {label:'JP',data:iZ.map(z=>ips.desagregado[z].jp),backgroundColor:CJP,borderRadius:3},
+        {label:'FP',data:iZ.map(z=>ips.desagregado[z].fp),backgroundColor:CFP,borderRadius:3},
+        {label:'50% umbral',data:iZ.map(_=>50),type:'line',borderColor:'rgba(0,0,0,.3)',
+          borderDash:[4,4],pointRadius:0,borderWidth:1},
+      ]
+    },
+    options:{
+      responsive:true,plugins:{legend:{position:'top'}},
+      scales:{y:{min:0,max:100,ticks:{callback:v=>v+'%'},grid:{color:'rgba(0,0,0,.05)'}}}
+    }
+  });
+
+  // Evolución
+  const ev=dat.evolucion;
+  new Chart(document.getElementById('cEvol'),{
+    type:'line',
+    data:{
+      labels:ev.map(e=>e.l),
+      datasets:[
+        {label:'JP',data:ev.map(e=>e.jp),borderColor:CJP,backgroundColor:CJPl,fill:true,tension:.4,pointRadius:5,pointBackgroundColor:CJP},
+        {label:'FP',data:ev.map(e=>e.fp),borderColor:CFP,backgroundColor:CFPl,fill:true,tension:.4,pointRadius:5,pointBackgroundColor:CFP},
+        {label:'50%',data:ev.map(_=>50),borderColor:'rgba(0,0,0,.2)',borderDash:[4,4],pointRadius:0,borderWidth:1},
+      ]
+    },
+    options:{
+      responsive:true,plugins:{legend:{position:'top'}},
+      scales:{y:{min:44,max:56,ticks:{callback:v=>v+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+               x:{ticks:{font:{size:9}}}}
+    }
+  });
+
+  // Datum por región vs ONPE
+  const dr=dat.por_region, dk=Object.keys(dr).sort();
+  const om={};(S1.regiones||[]).forEach(r=>om[r.nombre]=r.pct_jp);
+  new Chart(document.getElementById('cDatReg'),{
+    type:'bar',
+    data:{
+      labels:dk,
+      datasets:[
+        {label:'JP — Datum Conteo Rápido',data:dk.map(k=>dr[k]),backgroundColor:'rgba(34,197,94,.65)',borderRadius:2},
+        {label:'JP — ONPE parcial',data:dk.map(k=>om[k]||null),backgroundColor:'rgba(0,174,203,.65)',borderRadius:2},
+      ]
+    },
+    options:{
+      responsive:true,plugins:{legend:{position:'top'}},
+      scales:{y:{min:0,max:100,ticks:{callback:v=>v+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+               x:{ticks:{font:{size:9}}}}
+    }
+  });
+}
+
+// ── S3 ─────────────────────────────────────────────────────────
+let cSt=null, cSe=null;
+function initS3(){
+  const s=document.getElementById('selEmp');
+  (D.s3e||[]).forEach(e=>{const o=document.createElement('option');o.value=o.textContent=e;s.appendChild(o)});
+  s.addEventListener('change',updSt);
+  document.getElementById('selElec').addEventListener('change',updSt);
+  document.getElementById('selElec2').addEventListener('change',updSe);
+  updSt(); updSe();
+}
+function updSt(){
+  const emp=document.getElementById('selEmp').value;
+  const elec=document.getElementById('selElec').value;
+  if(cSt)cSt.destroy();
+  const vd=S3v[elec];
+  if(!vd||!vd.empresas||!vd.empresas[emp]) return;
+  const ed=vd.empresas[emp]; const sec=ed.sector;
+  document.getElementById('t3title').textContent=emp+' ('+sec+') — Retorno ±30d · '+elec.replace('_',' ')+' ('+vd.fecha+')';
+  const allE=Object.keys(vd.empresas).filter(e=>vd.empresas[e].sector===sec);
+  const sRet=ed.dias.map(d=>{
+    const vs=allE.map(e=>{const ei=vd.empresas[e];const i=ei.dias.indexOf(d);return i>=0?ei.ret[i]:null}).filter(v=>v!=null);
+    return vs.length?vs.reduce((a,b)=>a+b)/vs.length:null;
+  });
+  cSt=new Chart(document.getElementById('cStocks'),{
+    type:'line',
+    data:{
+      labels:ed.dias.map(d=>d===0?'Día 0':d>0?'+'+d+'d':d+'d'),
+      datasets:[
+        {label:emp,data:ed.ret,borderColor:NAVY,backgroundColor:'rgba(30,46,110,.08)',fill:true,tension:.3,pointRadius:2,borderWidth:2},
+        {label:'Sector '+sec+' (prom)',data:sRet,borderColor:TEAL,borderDash:[5,3],tension:.3,pointRadius:0,borderWidth:1.5},
+      ]
+    },
+    options:{
+      responsive:true,plugins:{legend:{position:'top'}},
+      scales:{
+        y:{ticks:{callback:v=>v.toFixed(1)+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+        x:{grid:{color:'rgba(0,0,0,.05)'}}
+      }
+    }
+  });
+}
+function updSe(){
+  const elec=document.getElementById('selElec2').value;
+  if(cSe)cSe.destroy();
+  const sd=S3s[elec];
+  if(!sd||!Object.keys(sd).length) return;
+  const dias=[-5,0,5,10,20];
+  const secCols=[NAVY,TEAL,'#2f81f7','#f0883e','#3fb950','#bc8cff'];
+  const sects=Object.keys(sd);
+  cSe=new Chart(document.getElementById('cSect'),{
+    type:'bar',
+    data:{
+      labels:sects,
+      datasets:dias.map((d,i)=>({
+        label:d===0?'Día 0 (elección)':d>0?'+'+d+'d':d+'d',
+        data:sects.map(s=>sd[s]&&sd[s][d]!=null?sd[s][d]:null),
+        backgroundColor:(secCols[i]||'#888')+'bb',borderColor:secCols[i]||'#888',
+        borderWidth:1,borderRadius:3,
+      }))
+    },
+    options:{
+      responsive:true,plugins:{legend:{position:'top'}},
+      scales:{y:{ticks:{callback:v=>v!=null?v.toFixed(1)+'%':'—'},grid:{color:'rgba(0,0,0,.05)'}}}
+    }
+  });
+}
+
+// ── S4 ─────────────────────────────────────────────────────────
+function initS4(){
+  const m=S4;
+  const lider=m.lider, liderColor=lider==='JP'?CJP:CFP;
+  const cm=document.getElementById('mod-cards');
+  [
+    ['P('+lider+' gana)',m['p_'+lider.toLowerCase()].toFixed(1)+'%',liderColor,'Probabilidad posterior'],
+    ['P('+(lider==='JP'?'FP':'JP')+' gana)',m['p_'+(lider==='JP'?'fp':'jp')].toFixed(1)+'%',lider==='JP'?CFP:CJP,'Probabilidad posterior'],
+    ['Posterior '+lider,m.mu.toFixed(3)+'%',liderColor,'IC 95%: ['+m.ci_lo+'% — '+m.ci_hi+'%]'],
+    ['Votos ONPE obs.',fmtN(m.tot),'#1E2E6E',m.pesc.toFixed(1)+'% actas procesadas'],
+  ].forEach(([l,v,c,s])=>cm.innerHTML+=
+    '<div class="card card-accent"><div class="card-lbl">'+l+'</div>'+
+    '<div class="card-val" style="color:'+c+'">'+v+'</div>'+
+    '<div class="card-sub">'+s+'</div></div>');
+
+  document.getElementById('mod-eq').textContent=
+    'θ|datos ~ Beta('+(m.a0+m.vj).toFixed(0)+', '+(m.b0+m.vf).toFixed(0)+
+    ')  Prior: θ₀='+m.prior_jp+'%, κ='+m.kappa+' votos virtuales';
+
+  // Distribución posterior
+  new Chart(document.getElementById('cPost'),{
+    type:'line',
+    data:{
+      labels:m.xs.map(x=>x.toFixed(2)+'%'),
+      datasets:[{
+        label:'P(θ | datos ONPE)',
+        data:m.pdf,
+        borderColor:liderColor,
+        backgroundColor:lider==='JP'?CJPl:CFPl,
+        fill:true,tension:.4,pointRadius:0,borderWidth:2,
+      }]
+    },
+    options:{
+      responsive:true,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}},grid:{color:'rgba(0,0,0,.05)'}},y:{display:false}}
+    }
+  });
+
+  // Evolución probabilidad
+  const ev=m.evol;
+  if(ev&&ev.length){
+    new Chart(document.getElementById('cEvolP'),{
+      type:'line',
+      data:{
+        labels:ev.map(e=>e.r),
+        datasets:[
+          {label:'P(FP gana) %',data:ev.map(e=>e.p_fp),borderColor:CFP,backgroundColor:CFPl,fill:true,tension:.3,pointRadius:3,borderWidth:2},
+          {label:'P(JP gana) %',data:ev.map(e=>e.p_jp),borderColor:CJP,backgroundColor:CJPl,fill:true,tension:.3,pointRadius:3,borderWidth:2},
+          {label:'50%',data:ev.map(_=>50),borderColor:'rgba(0,0,0,.2)',borderDash:[4,4],pointRadius:0,borderWidth:1},
+        ]
+      },
+      options:{
+        responsive:true,plugins:{legend:{position:'top'}},
+        scales:{
+          y:{min:0,max:100,ticks:{callback:v=>v+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+          x:{ticks:{font:{size:9}}}
+        }
+      }
+    });
+  }
+
+  document.getElementById('ref-mod').innerHTML=
+    '<b style="color:var(--navy)">Metodología: Beta-Binomial Bayesiano</b> ' +
+    '(Jackman 2005 · Linzer 2013)<br>'+
+    '<b>Prior:</b> promedio Datum ('+S2.datum.jp+'%) + Ipsos ('+S2.ipsos.jp+'%) → θ₀='+m.prior_jp+'%, '+
+    'concentración κ='+m.kappa+' (≈ votos virtuales de la encuesta).<br>'+
+    '<b>Likelihood:</b> '+fmtN(m.vj)+' votos JP y '+fmtN(m.vf)+' FP observados en ONPE ('+m.pesc+'% actas).<br>'+
+    '<b>Posterior:</b> θ='+m.mu+'% ± '+m.sd+'pp · IC 95%: ['+m.ci_lo+'%–'+m.ci_hi+'%]<br>'+
+    '<b>Conclusión: P('+m.lider+' > 50%) = '+m['p_'+m.lider.toLowerCase()]+'%</b> · '+
+    'Ventaja estimada: '+m.ventaja+'pp sobre umbral 50%.<br>'+
+    '<i style="color:var(--muted)">Refs: Jackman S. (2005) Australian J. Political Science 40(4):499-517 · '+
+    'Linzer D. (2013) JASA 108(501):124-134</i>';
+}
+
+// ── S5 Renta Fija ──────────────────────────────────────────────
+let cCurSob=null, cSpr=null, cScatRF=null;
+
+function initS5(){
+  if(D.s5.ult) document.getElementById('rf-ult').textContent='Datos al: '+D.s5.ult;
+
+  // Cards resumen por tipo/moneda
+  const rc=document.getElementById('rf-cards');
+  const tcols={Soberano:NAVY,BCRP:TEAL,Corporativo:'#2f81f7'};
+  ['Soberano','BCRP','Corporativo'].forEach(t=>{
+    const d=(D.s5.resumen[t]||{})['PEN']; if(!d) return;
+    rc.innerHTML+=`<div class="card card-accent">
+      <div class="panel-sub">${t} · PEN</div>
+      <div style="font-size:22px;font-weight:700;color:${tcols[t]}">${d.tir_med.toFixed(3)}%</div>
+      <div class="panel-sub">TIR mediana · n=${d.n} · [${d.tir_min.toFixed(2)}%–${d.tir_max.toFixed(2)}%]</div>
+    </div>`;
+  });
+  const cu=(D.s5.resumen['Corporativo']||{})['USD'];
+  if(cu) rc.innerHTML+=`<div class="card card-accent">
+    <div class="panel-sub">Corporativo · USD</div>
+    <div style="font-size:22px;font-weight:700;color:#2f81f7">${cu.tir_med.toFixed(3)}%</div>
+    <div class="panel-sub">TIR mediana · n=${cu.n} · [${cu.tir_min.toFixed(2)}%–${cu.tir_max.toFixed(2)}%]</div>
+  </div>`;
+
+  // Plot 1: Curvas soberana PEN + VAC + BCRP
+  const cs=D.s5.curva_sob, cv=D.s5.curva_sob_vac, cb=D.s5.curva_bcrp;
+  cCurSob=new Chart(document.getElementById('cCurvasSob'),{
+    type:'line',
+    data:{datasets:[
+      {label:'Soberano PEN (nominal)',
+        data:cs.years.map((y,i)=>({x:y,y:cs.tirs[i]})),
+        borderColor:NAVY,backgroundColor:'rgba(30,46,110,.08)',
+        fill:true,tension:.4,pointRadius:6,pointBackgroundColor:NAVY,borderWidth:2.5},
+      {label:'Soberano VAC (real)',
+        data:cv.years.map((y,i)=>({x:y,y:cv.tirs[i]})),
+        borderColor:TEAL,fill:false,tension:.4,pointRadius:5,
+        pointBackgroundColor:TEAL,borderWidth:2,borderDash:[6,3]},
+      {label:'BCRP CD (política monetaria)',
+        data:cb.years.map((y,i)=>({x:y,y:cb.tirs[i]})),
+        borderColor:CAMBER,fill:false,tension:.3,pointRadius:7,
+        pointBackgroundColor:CAMBER,borderWidth:2,pointStyle:'triangle'},
+    ]},
+    options:{responsive:true,
+      plugins:{legend:{position:'top'},
+        tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y.toFixed(3)}%`}}},
+      scales:{
+        x:{type:'linear',title:{display:true,text:'Año de Vencimiento'},
+           ticks:{stepSize:2},grid:{color:'rgba(0,0,0,.05)'}},
+        y:{title:{display:true,text:'TIR %'},
+           ticks:{callback:v=>v.toFixed(2)+'%'},grid:{color:'rgba(0,0,0,.05)'}}
+      }
+    }
+  });
+
+  // Plot 2: Spread barras + línea eje secundario
+  const sd=D.s5.spread_data;
+  cSpr=new Chart(document.getElementById('cSpread'),{
+    type:'bar',
+    data:{
+      labels:sd.map(d=>d.year),
+      datasets:[
+        {label:'TIR Corporativo PEN',data:sd.map(d=>d.corp),
+          backgroundColor:'rgba(30,46,110,.65)',borderRadius:4,order:2},
+        {label:'TIR Soberano PEN (ref)',data:sd.map(d=>d.sob),
+          backgroundColor:'rgba(0,174,203,.65)',borderRadius:4,order:2},
+        {label:'Spread (pb)',data:sd.map(d=>+(d.spread*100).toFixed(1)),
+          type:'line',borderColor:CRED,backgroundColor:'transparent',
+          pointRadius:5,pointBackgroundColor:CRED,borderWidth:2,yAxisID:'y2',order:1},
+      ]
+    },
+    options:{responsive:true,
+      plugins:{legend:{position:'top'},
+        tooltip:{callbacks:{label:c=>c.dataset.label==='Spread (pb)'
+          ?`Spread: ${c.raw}pb`:`${c.dataset.label}: ${Number(c.raw).toFixed(3)}%`}}},
+      scales:{
+        x:{title:{display:true,text:'Año de Vencimiento'},grid:{color:'rgba(0,0,0,.05)'}},
+        y:{title:{display:true,text:'TIR %'},ticks:{callback:v=>v.toFixed(2)+'%'},grid:{color:'rgba(0,0,0,.05)'}},
+        y2:{position:'right',title:{display:true,text:'Spread (pb)'},
+             ticks:{callback:v=>v+'pb'},grid:{display:false}}
+      }
+    }
+  });
+
+  // Plot 3: Scatter por tipo
+  document.getElementById('selMonRF').addEventListener('change', updScatRF);
+  updScatRF();
+}
+
+function updScatRF(){
+  const mf=document.getElementById('selMonRF').value;
+  let pts=(D.s5.scatter||[]);
+  if(mf!=='TODAS') pts=pts.filter(p=>p.mon===mf);
+  const cmap={
+    'Soberano':          NAVY,
+    'BCRP':              TEAL,
+    'Corporativo_IG':    '#2f81f7',
+    'Corporativo_CP':    CAMBER,
+    'Corporativo_Spec':  CRED,
+    'Corporativo_NR':    GRAY2,
+  };
+  const dsets=[
+    {k:'Soberano',       lbl:'Soberano (GOB.CENTRAL)', fn:p=>p.tipo==='Soberano'},
+    {k:'BCRP',           lbl:'BCRP (Certificados CD)', fn:p=>p.tipo==='BCRP'},
+    {k:'Corporativo_IG', lbl:'Corp — Inv.Grade',       fn:p=>p.tipo==='Corporativo'&&p.g==='Investment Grade'},
+    {k:'Corporativo_CP', lbl:'Corp — Corto Plazo',     fn:p=>p.tipo==='Corporativo'&&p.g==='Corto Plazo'},
+    {k:'Corporativo_Spec',lbl:'Corp — Speculative',    fn:p=>p.tipo==='Corporativo'&&p.g==='Speculative Grade'},
+    {k:'Corporativo_NR', lbl:'Corp — Sin Rating',      fn:p=>p.tipo==='Corporativo'&&p.g==='Sin Rating'},
+  ].map(d=>({
+    label:d.lbl,
+    data:pts.filter(d.fn).map(p=>({x:p.dur,y:p.tir,e:p.e,n:p.n,mon:p.mon,rat:p.rat,sp:p.sp,yr:p.yr})),
+    backgroundColor:(cmap[d.k]||GRAY2)+'bb',pointRadius:5,pointHoverRadius:8,
+  }));
+  if(cScatRF) cScatRF.destroy();
+  cScatRF=new Chart(document.getElementById('cScatterRF'),{
+    type:'scatter',data:{datasets:dsets},
+    options:{responsive:true,
+      plugins:{legend:{position:'top'},
+        tooltip:{callbacks:{label:c=>{
+          const d=c.raw;
+          return[d.e+' ('+d.n+')',
+                 'TIR: '+d.y.toFixed(3)+'% | Dur: '+d.x.toFixed(2)+'a | Venc: '+(d.yr||'—'),
+                 'Spread: '+(d.sp!=null?d.sp.toFixed(3)+'%':'—')+' | '+d.mon+' | '+d.rat];
+        }}}}},
+      scales:{
+        x:{title:{display:true,text:'Duración (años)'},min:0,grid:{color:'rgba(0,0,0,.05)'}},
+        y:{title:{display:true,text:'TIR %'},ticks:{callback:v=>v.toFixed(2)+'%'},grid:{color:'rgba(0,0,0,.05)'}}
+      }
+    }
+  });
+}
+
+// ══ INIT ══════════════════════════════════════════════════════
+function waitForChart(cb){
+  if(typeof Chart!=='undefined') cb();
+  else setTimeout(()=>waitForChart(cb), 100);
+}
+waitForChart(()=>{
+  initS1(); initS2(); initS3(); initS4(); initS5();
+});
+</script>
+</body>
+</html>
