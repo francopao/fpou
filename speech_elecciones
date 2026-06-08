@@ -1,0 +1,278 @@
+# SPEECH — Comité de Inversiones AFP Integra
+## Presentación: Dashboard Electoral Perú 2026
+### Segunda Vuelta Presidencial · 07 de junio de 2026
+
+---
+
+## APERTURA (30 segundos)
+
+*"Buenos días a todos. Lo que tienen frente a ustedes es una herramienta que
+desarrollamos internamente en el escritorio de Renta Variable Local para
+monitorear en tiempo real el impacto electoral en nuestro portafolio.
+Es un dashboard interactivo —autocontenido, enviable por correo— que integra
+cuatro fuentes de información: los resultados parciales de ONPE, los conteos
+rápidos de Datum e Ipsos, los precios históricos de las acciones que tenemos
+en nuestros fondos, y el mercado secundario de renta fija local."*
+
+---
+
+## SECCIÓN 1 — RESULTADOS ONPE (2 minutos)
+
+*"Empecemos por lo más urgente: los resultados parciales del ONPE.*
+
+*El marcador que ven arriba muestra en tiempo real el porcentaje de votos
+válidos de cada candidato según las actas ya contabilizadas. A la izquierda,
+Juntos por el Perú en verde; a la derecha, Fuerza Popular en naranja.
+El porcentaje en el centro indica qué fracción del total de actas ya fue
+procesada —que es lo que nos dice cuánta confianza podemos darle a ese número.*
+
+*El gráfico de barras horizontales de la izquierda ordena las regiones de mayor
+a menor ventaja de JP. Lo que vemos claramente es la fractura geográfica
+clásica del Perú: interior y sierra del sur con JP, Lima y costa norte con FP.
+El de la derecha muestra el avance de escrutinio: en verde las regiones donde
+ya se contabilizó más del 80% de actas, en rojo donde aún hay menos del 40%.
+Esto es importante para saber si los números que estamos viendo son definitivos
+o pueden moverse.*
+
+*La tabla completa les permite ver región por región: el porcentaje exacto de
+cada candidato, el margen entre ambos, y la hora de la última actualización.
+Este dashboard se puede regenerar cada vez que corremos el script, capturando
+el estado actual de ONPE."*
+
+---
+
+## SECCIÓN 2 — CONTEO RÁPIDO ENCUESTADORAS (2 minutos)
+
+*"La sección dos complementa los datos de ONPE con los conteos rápidos de
+Datum e Ipsos, publicados esta mañana al cierre de la jornada electoral.*
+
+*Ambas encuestadoras coinciden en una cosa: **empate estadístico**.
+Datum da 50.14% para JP con un margen de error de ±1 punto porcentual, lo que
+significa que el resultado real puede estar entre 49.14% y 51.14%.
+Ipsos da 50.3% para JP con ±1.9pp. Los intervalos de confianza de ambos
+candidatos se solapan completamente. Esto es una elección que el cómputo
+oficial de ONPE va a definir, no las encuestas.*
+
+*El gráfico de la derecha, de Ipsos, muestra el resultado desagregado por zona:
+Lima da 63.6% para FP. El interior del país da 57.4% para JP.
+Esta polarización Lima vs regiones es estructuralmente idéntica a 2021.
+Para nuestra tesis de inversión esto es relevante: si JP consolida el resultado,
+el mercado puede reaccionar negativamente en el corto plazo, como lo hizo en
+junio de 2021.*
+
+*El gráfico de evolución de Datum en la parte inferior muestra la tendencia
+desde mayo: FP estuvo consistentemente por encima hasta la última semana,
+cuando el voto se cerró completamente. Esa convergencia hacia 50-50 en las
+últimas 72 horas es lo que explica la incertidumbre que tenemos hoy."*
+
+---
+
+## SECCIÓN 3 — ACCIONES BVL (2 minutos)
+
+*"La tercera sección es la más relevante para las decisiones de portafolio.
+Lo que hicimos aquí fue tomar los precios históricos de las acciones que
+monitoreamos —Alicorp, InRetail, Pacasmayo, Unacem, Aenza y Ferreycorp—
+y calcular el retorno acumulado en una ventana de ±30 días alrededor de cada
+elección presidencial desde 2016.*
+
+*El selector superior izquierdo permite elegir la acción; el selector
+derecho, qué elección analizar. El día 0 es el día de votación; los valores
+negativos son días previos, los positivos días posteriores.*
+
+*Lo que observamos históricamente es que:*
+- *En la segunda vuelta de 2021, las acciones tuvieron una corrección
+  pronunciada en los días previos y durante la semana posterior al resultado
+  de Pedro Castillo.*
+- *En la segunda vuelta de 2016, con Kuczynski, el mercado reaccionó
+  positivamente.*
+- *La línea punteada en cada gráfico es el promedio del sector al que
+  pertenece la acción, para ver si el movimiento es individual o sistémico.*
+
+*El segundo gráfico, el de barras agrupadas, muestra el retorno promedio
+por sector en días clave: menos 5 días, el día de la elección, más 5, más 10
+y más 20. Esto les permite ver si el sector consumo, utilities o financials
+tuvo comportamientos diferenciados según el resultado electoral.
+La estructura del gráfico es dinámica: si añadimos más acciones o sectores
+al archivo Excel, el gráfico se actualiza automáticamente."*
+
+---
+
+## SECCIÓN 4 — MODELO BAYESIANO (3 minutos — la más técnica)
+
+### El concepto central (para que lo puedan explicar)
+
+*"La cuarta sección es el modelo estadístico que desarrollamos para estimar
+la probabilidad de que cada candidato supere el umbral del 50% con los votos
+que ONPE ya contabilizó.*
+
+*Les explico la lógica sin entrar en matemáticas:*
+
+*Imaginen que ustedes, antes de ver un solo voto oficial, ya tienen información
+valiosa: los conteos rápidos de Datum e Ipsos. Datum dice 50.14% para JP,
+Ipsos dice 50.3%. El promedio de ambas encuestadoras es nuestro punto de partida,
+nuestra creencia inicial. En estadística bayesiana, esto se llama el **prior**:
+es lo que creemos antes de ver los datos nuevos.*
+
+*Conforme ONPE va publicando actas, ese prior se va actualizando con los
+votos reales. Si los votos de ONPE van en la misma dirección que las encuestas,
+nuestra confianza en ese resultado aumenta. Si van en contra, la estimación
+se ajusta. El resultado actualizado se llama **posterior**: es la combinación
+matemáticamente óptima de lo que sabíamos antes con lo que estamos viendo ahora.*
+
+*El parámetro κ —que en el código fijamos en 500— controla cuánto peso le
+damos al prior versus los datos de ONPE. Con 500, equivale a decirle al modelo
+que las encuestas valen el peso de 500 votos virtuales de referencia.
+Conforme llegan millones de votos reales, ese prior se vuelve insignificante
+y el modelo refleja casi exclusivamente los datos de ONPE."*
+
+### Las métricas del dashboard
+
+*"Las cuatro tarjetas en la parte superior muestran:*
+- *La probabilidad de que cada candidato supere el 50%.*
+- *El porcentaje central estimado por el modelo.*
+- *El intervalo de credibilidad al 95%: el rango donde, con 95% de
+  confianza estadística, se encuentra el resultado final.*
+
+*El gráfico de la izquierda es la distribución posterior: muestra toda la
+incertidumbre del modelo. Si la curva está centrada en 52%, quiere decir que
+el modelo estima 52% para ese candidato, pero el ancho de la campana nos dice
+cuánta incertidumbre hay. Con pocos votos la curva es ancha; con más votos
+se vuelve muy estrecha.*
+
+*El gráfico de la derecha muestra cómo va evolucionando la probabilidad
+conforme llegan los resultados de cada región —en orden cronológico.
+Cuando una región pro-FP con muchos votos ingresa, la línea sube para FP;
+cuando ingresa una región pro-JP, baja. Es la narrativa temporal del cómputo."*
+
+### Por qué es confiable (si preguntan)
+
+*"Si alguien pregunta por qué este modelo y no otro: el Beta-Binomial
+Bayesiano es el estándar en ciencia política para modelar conteos electorales
+parciales. Fue formalizado por Simon Jackman en 2005 —su paper está citado
+en el dashboard— y usado en versiones sofisticadas por medios como
+The Economist y FiveThirtyEight. Su fortaleza es que maneja
+naturalmente la incertidumbre incremental: cuantos más votos llegan, más
+preciso se vuelve, y el intervalo de credibilidad se reduce. No requiere
+asumir que los votos pendientes son idénticos a los procesados —algo que
+modelos más simples sí asumen."*
+
+---
+
+## SECCIÓN 5 — RENTA FIJA LOCAL (2 minutos)
+
+*"La quinta sección es relevante para el equipo de renta fija y para
+entender el contexto macroeconómico que rodea esta elección.*
+
+*Separamos tres tipos de instrumentos —que no conviene mezclar en el análisis:*
+
+*Primero, los **bonos soberanos** del Gobierno Central —los que tienen nemónico
+SB en el mercado—: son la referencia libre de riesgo crediticio local.
+La curva soberana PEN en el primer gráfico nos muestra la estructura de tasas
+del Estado peruano por plazo: en cuánto rinde un bono que vence en 2028
+versus uno que vence en 2037. Esta curva es el ancla de todo el mercado.*
+
+*La línea punteada teal son los soberanos VAC —indexados a inflación—
+que nos dan la tasa real implícita del mercado.*
+
+*Los triángulos en color ámbar son los Certificados de Depósito del BCRP:
+instrumentos de muy corto plazo que reflejan directamente la tasa de
+política monetaria. Son la herramienta que usa el banco central para
+anclar las expectativas de corto plazo.*
+
+*El segundo gráfico es el más útil para los traders: muestra el spread
+crediticio, es decir, cuántos puntos básicos adicionales pagan los bonos
+corporativos respecto al soberano de mismo vencimiento y misma moneda.
+Por ejemplo, si el soberano al 2028 rinde 3.9% y un corporativo al 2028
+rinde 4.4%, el spread es de 50 puntos básicos. Ese spread es la prima
+que el mercado cobra por el riesgo privado.*
+
+*Finalmente, el scatter interactivo permite ver todos los instrumentos
+simultáneamente: ubicación por duración en el eje horizontal y rendimiento
+en el eje vertical. El color distingue soberanos, BCRP, corporativos
+investment grade y corporativos especulativos. Al pasar el cursor sobre cada
+punto aparece el emisor, nemónico, TIR, duración y spread."*
+
+---
+
+## CIERRE (30 segundos)
+
+*"Para resumir: este dashboard nos da, en un solo documento portable:
+la fotografía actual del escrutinio por región, la señal de las encuestadoras,
+el comportamiento histórico de nuestras acciones en cada ciclo electoral,
+un modelo estadístico que combina encuestas con datos de ONPE para estimar
+el ganador con un nivel de confianza medible, y el pulso del mercado de
+renta fija local.*
+
+*El script se puede correr cuantas veces queramos durante el día a medida
+que ONPE publica más actas, y el modelo se actualiza automáticamente con
+los nuevos datos. El HTML generado es autocontenido y puede enviarse por
+correo sin perder ninguna interactividad.*
+
+*Quedo a disposición para cualquier pregunta técnica o de portafolio."*
+
+---
+
+## PREGUNTAS FRECUENTES — RESPUESTAS PREPARADAS
+
+### "¿Cómo funciona exactamente el código?"
+
+*"El script tiene dos partes. La primera, onpe_regional.py, abre un navegador
+Chrome de forma automática usando Selenium —una librería estándar de
+automatización web— navega a la página de resultados del ONPE, hace clic
+en cada región del dropdown de Angular Material, lee los porcentajes y votos
+que aparecen en las tarjetas de candidatos, y los almacena en un DataFrame
+de pandas. Es webscraping estructurado contra la SPA del ONPE.*
+
+*La segunda parte, cocina.py, toma ese DataFrame y los archivos Excel de
+precios y renta fija, calcula todas las métricas, y genera un HTML
+autocontenido usando Chart.js —la librería más estándar de gráficos en
+JavaScript. Todo el HTML, el CSS y los datos van embebidos en un único
+archivo para que pueda enviarse por correo sin dependencias externas."*
+
+### "¿Por qué Bayesiano y no simplemente proyectar el porcentaje actual?"
+
+*"Proyectar el porcentaje actual asume que los votos que faltan van a tener
+exactamente la misma distribución que los ya contados. Eso puede ser muy
+incorrecto si las regiones que faltan por reportar tienen un perfil político
+distinto al promedio ya procesado. El modelo Bayesiano no hace esa asunción:
+usa las encuestadoras como prior —que sí son muestras representativas
+de todo el país— y las combina con los votos reales. La actualización se hace
+voto a voto mediante la fórmula: α_posterior = α_prior + votos_JP,
+β_posterior = β_prior + votos_FP. Eso nos da la distribución completa de
+incertidumbre, no solo un punto estimado."*
+
+### "¿Qué significa el intervalo de credibilidad al 95%?"
+
+*"Significa que, dado todo lo que observamos —encuestadoras y votos de ONPE—,
+el modelo asigna 95% de probabilidad a que el resultado final esté dentro de
+ese rango. Es distinto al intervalo de confianza frecuentista: aquí la
+probabilidad se refiere directamente al parámetro desconocido —el resultado
+final— no a la variabilidad del estimador. Para fines prácticos, si el
+intervalo es [49.2%, 50.8%] y la decisión es comprar o vender, ese ancho
+de 1.6 puntos les dice que la incertidumbre es alta y que conviene esperar
+más actas antes de tomar posición."*
+
+### "¿Por qué el gráfico de acciones empieza en -30 días?"
+
+*"Porque el mercado descuenta anticipadamente. El precio de hoy incorpora
+las expectativas del mercado sobre lo que puede pasar. Al ver el retorno
+desde 30 días antes de la elección, podemos identificar si el mercado
+estaba anticipando el resultado —si la acción subió antes de la elección
+es señal de que los participantes esperaban un resultado favorable.
+La caída o alza en los días posteriores nos dice cuánto del evento ya
+estaba descontado y cuánto fue sorpresa."*
+
+### "¿El modelo puede equivocarse?"
+
+*"Sí, y es importante ser honestos con eso. El modelo es tan bueno como los
+datos que lo alimentan. Si las encuestadoras tienen un sesgo sistemático —por
+ejemplo, si hay voto oculto en alguno de los dos candidatos— el prior va a
+arrastrar ese sesgo. Y si las regiones que faltan por procesar son muy
+distintas al patrón promedio, la estimación puede moverse significativamente.
+Por eso publicamos el intervalo de credibilidad: no es un número determinístico,
+es una distribución de probabilidad. La herramienta correcta para leer el
+modelo no es 'JP va a ganar con 52%', sino 'dado lo que vemos, la probabilidad
+de que JP supere el 50% es X%'."*
+
+---
+*Preparado para AFP Integra · Renta Variable Local · Junio 2026*
