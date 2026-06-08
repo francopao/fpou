@@ -454,6 +454,8 @@ if __name__ == "__main__":
             print("  (vacío)")
             
             
+df_consolidado['timestamp'] = (pd.to_datetime(df_consolidado['timestamp'])
+    .dt.floor('s'))
 
 df_consolidado.to_excel(
     r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\Modelo Franco\Elecciones\df_consolidado.xlsx",
