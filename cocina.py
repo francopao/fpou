@@ -302,72 +302,129 @@ def build_s4(s1, s2):
 # S5 — RENTA FIJA
 # ══════════════════════════════════════════════════════════════════
 def build_s5():
-    df = pd.read_excel(RF_PATH, sheet_name="Sheet1", header=1)
-    df.columns = ["Fecha","Nemo","ISIN","Emisor","Moneda",
-                  "PL_pct","PS_pct","TIR","Origen","Spread",
-                  "PL_m","PS_m","IC_m","F_Venc","F_Emis","Cupon",
-                  "Marg_L","TIR_SO","Rating","Ult_C","Prox_C","Dur"]
-    df = df.dropna(subset=["Fecha","Nemo"])
+    """
+    Renta Fija Local.
+    Soberano     → Emisor==GOB.CENTRAL  o  Nemo starts with SB
+    BCRP         → Emisor==BCRP         o  Nemo starts with CD
+    Corporativo  → resto
+    """
+    df = pd.read_excel(RF_PATH, header=1)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    col_map = {
+        "Fecha":"Fecha","Nemónico":"Nemo","ISIN":"ISIN",
+        "Emisor":"Emisor","Moneda":"Moneda",
+        "TIR %":"TIR","Spreads":"Spread","Duración":"Dur",
+        "F. Vencimiento":"F_Venc","Rating":"Rating",
+    }
+    df = df.rename(columns={k:v for k,v in col_map.items() if k in df.columns})
+    df = df.dropna(subset=["Nemo"])
     for c in ["TIR","Spread","Dur"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    def parse_f(v):
-        try: return datetime.strptime(str(v).strip(),"%d/%m/%Y").date()
+    def _pv(v):
+        try: return datetime.strptime(str(v).strip(), "%d/%m/%Y")
         except: return None
-    df["Fdt"] = df["Fecha"].apply(parse_f)
-    df = df.dropna(subset=["Fdt"])
-    fechas = sorted(df["Fdt"].unique())
-    ult = fechas[-1] if fechas else None
+    df["Venc_dt"]   = df["F_Venc"].apply(_pv)
+    df["Venc_year"] = df["Venc_dt"].apply(lambda x: x.year if x else None)
 
-    def clasif(r):
+    def _pf(v):
+        try: return datetime.strptime(str(v).strip(), "%d/%m/%Y").date()
+        except: return None
+    df["Fdt"] = df["Fecha"].apply(_pf)
+    fechas = sorted([f for f in df["Fdt"].unique() if f])
+    ult    = fechas[-1] if fechas else None
+    dfu    = df[df["Fdt"]==ult].copy() if ult else df.copy()
+
+    def _tipo(row):
+        em=str(row.get("Emisor","")).strip(); nm=str(row.get("Nemo","")).strip()
+        if em=="GOB.CENTRAL" or nm.startswith("SB"): return "Soberano"
+        elif em=="BCRP"      or nm.startswith("CD"): return "BCRP"
+        else:                                         return "Corporativo"
+    dfu=dfu.copy(); dfu["Tipo"]=dfu.apply(_tipo, axis=1)
+
+    def _grado(r):
         r=str(r).strip()
         if not r or r=="nan": return "Sin Rating"
         if r.startswith("CP"): return "Corto Plazo"
         if r in ["AAA","AA+","AA","AA-","A+","A","A-","BBB+","BBB","BBB-"]:
             return "Investment Grade"
         return "Speculative Grade"
-    df["Grado"] = df["Rating"].apply(clasif)
+    dfu["Grado"]=dfu["Rating"].apply(_grado)
 
-    tramos=[(0,1,"0-1a"),(1,3,"1-3a"),(3,5,"3-5a"),(5,10,"5-10a"),(10,99,"10a+")]
-    by_mon={}
-    for mon in ["PEN","USD","VAC"]:
-        sub=df[df["Moneda"]==mon]
-        curva={}
-        if ult:
-            sf=sub[sub["Fdt"]==ult]
-            for lo,hi,lbl in tramos:
-                seg=sf[(sf["Dur"]>=lo)&(sf["Dur"]<hi)]["TIR"].dropna()
-                curva[lbl]=round(float(seg.median()),3) if not seg.empty else None
-        por_grado={}
-        if ult:
-            sf=sub[sub["Fdt"]==ult]
-            for g in ["Investment Grade","Speculative Grade","Corto Plazo","Sin Rating"]:
-                seg=sf[sf["Grado"]==g]["TIR"].dropna()
-                por_grado[g]={"tir":round(float(seg.median()),3) if not seg.empty else None,"n":len(seg)}
-        evol={}
-        for f in fechas:
-            seg=sub[sub["Fdt"]==f]["TIR"].dropna()
-            evol[str(f)]=round(float(seg.median()),3) if not seg.empty else None
-        by_mon[mon]={"curva":curva,"por_grado":por_grado,"evol":evol,"ult":str(ult)}
+    # Curva soberana PEN
+    sob_p = dfu[(dfu["Tipo"]=="Soberano")&(dfu["Moneda"]=="PEN")&dfu["TIR"].notna()]
+    sc = sob_p.groupby("Venc_year")["TIR"].median().reset_index().sort_values("Venc_year")
+    curva_sob = {"years":[int(r["Venc_year"]) for _,r in sc.iterrows()],
+                 "tirs": [round(float(r["TIR"]),3) for _,r in sc.iterrows()]}
 
+    # Curva soberana VAC
+    sob_v = dfu[(dfu["Tipo"]=="Soberano")&(dfu["Moneda"]=="VAC")&dfu["TIR"].notna()]
+    vc = sob_v.groupby("Venc_year")["TIR"].median().reset_index().sort_values("Venc_year")
+    curva_sob_vac = {"years":[int(r["Venc_year"]) for _,r in vc.iterrows()],
+                     "tirs": [round(float(r["TIR"]),3) for _,r in vc.iterrows()]}
+
+    # Curva BCRP CDs PEN
+    bcrp = dfu[(dfu["Tipo"]=="BCRP")&(dfu["Moneda"]=="PEN")&dfu["TIR"].notna()&dfu["Venc_year"].notna()]
+    bc = bcrp.groupby("Venc_year")["TIR"].median().reset_index().sort_values("Venc_year")
+    curva_bcrp = {"years":[int(r["Venc_year"]) for _,r in bc.iterrows()],
+                  "tirs": [round(float(r["TIR"]),3) for _,r in bc.iterrows()]}
+
+    # Spread corporativo PEN vs soberano PEN (interpolado si no hay mismo año)
+    sob_yr = dict(zip(sc["Venc_year"], sc["TIR"]))
+    corp_p = dfu[(dfu["Tipo"]=="Corporativo")&(dfu["Moneda"]=="PEN")
+                 &dfu["TIR"].notna()&dfu["Venc_year"].notna()]
+    spread_data = []
+    for yr, grp in corp_p.groupby("Venc_year"):
+        ref = sob_yr.get(yr)
+        if ref is None:
+            yrs=sorted(sob_yr.keys()); bf=[y for y in yrs if y<=yr]; af=[y for y in yrs if y>yr]
+            if bf and af:
+                y0,y1=bf[-1],af[0]
+                ref=sob_yr[y0]+(sob_yr[y1]-sob_yr[y0])*(yr-y0)/(y1-y0)
+            elif bf: ref=sob_yr[bf[-1]]
+            elif af: ref=sob_yr[af[0]]
+        if ref is None: continue
+        cm=float(grp["TIR"].median())
+        spread_data.append({"year":int(yr),"corp":round(cm,3),
+                             "sob":round(float(ref),3),
+                             "spread":round(cm-float(ref),3),"n":int(len(grp))})
+    spread_data.sort(key=lambda x:x["year"])
+
+    # Scatter completo por tipo
     scatter=[]
-    if ult:
-        sf=df[df["Fdt"]==ult]
-        for _,row in sf.iterrows():
-            if pd.notna(row["TIR"]) and pd.notna(row["Dur"]):
-                scatter.append({
-                    "e":str(row["Emisor"])[:18],"n":str(row["Nemo"]),
-                    "tir":round(float(row["TIR"]),3),"dur":round(float(row["Dur"]),3),
-                    "sp":round(float(row["Spread"]),3) if pd.notna(row["Spread"]) else None,
-                    "mon":str(row["Moneda"]),
-                    "rat":str(row["Rating"]) if pd.notna(row["Rating"]) else "",
-                    "g":row["Grado"],
-                })
-    return {"by_mon":by_mon,"scatter":scatter,"ult":str(ult) if ult else ""}
+    for _,row in dfu.iterrows():
+        if pd.notna(row.get("TIR")) and pd.notna(row.get("Dur")):
+            scatter.append({
+                "e":  str(row.get("Emisor",""))[:18],
+                "n":  str(row.get("Nemo","")),
+                "tir":round(float(row["TIR"]),3),
+                "dur":round(float(row["Dur"]),3),
+                "sp": round(float(row["Spread"]),3) if pd.notna(row.get("Spread")) else None,
+                "mon":str(row.get("Moneda","")),
+                "rat":str(row.get("Rating","")) if pd.notna(row.get("Rating")) else "",
+                "tipo":row["Tipo"],
+                "g":  row["Grado"],
+                "yr": int(row["Venc_year"]) if pd.notna(row.get("Venc_year")) else None,
+            })
 
-# ══════════════════════════════════════════════════════════════════
-# GENERADOR HTML
-# ══════════════════════════════════════════════════════════════════
+    # Resumen estadístico por tipo y moneda
+    resumen={}
+    for tipo in ["Soberano","BCRP","Corporativo"]:
+        resumen[tipo]={}
+        for mon in ["PEN","USD","VAC"]:
+            sub=dfu[(dfu["Tipo"]==tipo)&(dfu["Moneda"]==mon)&dfu["TIR"].notna()]
+            if sub.empty: continue
+            resumen[tipo][mon]={"tir_med":round(float(sub["TIR"].median()),3),
+                                 "tir_min":round(float(sub["TIR"].min()),3),
+                                 "tir_max":round(float(sub["TIR"].max()),3),
+                                 "n":int(len(sub))}
+
+    return {"curva_sob":curva_sob,"curva_sob_vac":curva_sob_vac,
+            "curva_bcrp":curva_bcrp,"spread_data":spread_data,
+            "scatter":scatter,"resumen":resumen,"ult":str(ult) if ult else ""}
+
 def generar_html(s1,s2,s3,s4,s5):
     ts = datetime.now().strftime("%d/%m/%Y %H:%M")
     # Paleta colores
@@ -755,32 +812,50 @@ footer .ft-bar{{height:3px;background:linear-gradient(90deg,var(--teal),var(--ye
     <div class="section-sub" id="rf-ult"></div>
   </div>
 
-  <div class="ctrl">
-    <span class="ctrl-lbl">Moneda:</span>
-    <button class="btn-m active" data-m="PEN">PEN (Sol)</button>
-    <button class="btn-m" data-m="USD">USD (Dólar)</button>
-    <button class="btn-m" data-m="VAC">VAC (Indexado)</button>
-  </div>
-  <div class="g2">
-    <div class="panel">
-      <div class="panel-title">Curva de rendimientos — TIR mediana por tramo de duración</div>
-      <canvas id="cCurva"></canvas>
-    </div>
-    <div class="panel">
-      <div class="panel-title">TIR mediana por grado de riesgo</div>
-      <canvas id="cGrado"></canvas>
-    </div>
-  </div>
+  <!-- Cards resumen por tipo -->
+  <div class="cards c4" id="rf-cards" style="margin-bottom:18px"></div>
+
+  <!-- Plot 1: Curva soberana PEN + VAC + BCRP -->
   <div class="panel">
-    <div class="panel-title">Scatter TIR vs Duración — todos los instrumentos</div>
-    <div class="panel-sub">Colores: verde=Investment Grade · rojo=Speculative · azul=Corto Plazo</div>
+    <div class="panel-title">Curva de Rendimientos — Soberanos PEN &amp; VAC + Certificados BCRP</div>
+    <div class="panel-sub">
+      <b>Soberanos</b> (Emisor GOB.CENTRAL / nemónico SB*) = referencia libre de riesgo crediticio local. &nbsp;
+      <b>BCRP</b> (nemónico CD*) = señal de política monetaria. &nbsp;
+      <b>VAC</b> = tasa real indexada a inflación. No se mezclan entre sí.
+    </div>
+    <canvas id="cCurvasSob" style="max-height:300px"></canvas>
+  </div>
+
+  <!-- Plot 2: Spread corporativo vs soberano PEN -->
+  <div class="panel">
+    <div class="panel-title">Spread Crediticio — Corporativo PEN vs Soberano PEN (prima de riesgo por año de vencimiento)</div>
+    <div class="panel-sub">
+      Puntos básicos adicionales que paga un corporativo vs el soberano de igual vencimiento y moneda.
+      Eje izquierdo = TIR (%) · Eje derecho = Spread (pb).
+    </div>
+    <canvas id="cSpread" style="max-height:280px"></canvas>
+  </div>
+
+  <!-- Plot 3: Scatter TIR vs Duración por tipo -->
+  <div class="panel">
+    <div class="panel-title">TIR vs Duración — Universo completo por tipo de instrumento</div>
+    <div class="panel-sub">
+      <b style="color:#1E2E6E">■ Soberano</b> &nbsp;
+      <b style="color:#00AECB">■ BCRP</b> &nbsp;
+      <b style="color:#2f81f7">■ Corp IG</b> &nbsp;
+      <b style="color:#e0a320">■ Corp Corto Plazo</b> &nbsp;
+      <b style="color:#e84343">■ Corp Speculative</b>
+    </div>
     <div class="ctrl">
       <span class="ctrl-lbl">Moneda:</span>
-      <select id="selMon"><option value="TODAS">Todas</option>
-        <option value="PEN">PEN</option><option value="USD">USD</option><option value="VAC">VAC</option>
+      <select id="selMonRF">
+        <option value="TODAS">Todas</option>
+        <option value="PEN" selected>PEN (Sol)</option>
+        <option value="USD">USD (Dólar)</option>
+        <option value="VAC">VAC (Indexado)</option>
       </select>
     </div>
-    <canvas id="cScatter" style="max-height:400px"></canvas>
+    <canvas id="cScatterRF" style="max-height:400px"></canvas>
   </div>
 </div>
 
@@ -1118,97 +1193,129 @@ function initS4(){{
     'Linzer D. (2013) JASA 108(501):124-134</i>';
 }}
 
-// ── S5 ─────────────────────────────────────────────────────────
-let cCurva=null, cGrado=null, cScat=null;
-let monAct='PEN';
+// ── S5 Renta Fija ──────────────────────────────────────────────
+let cCurSob=null, cSpr=null, cScatRF=null;
 
 function initS5(){{
-  if(S5.ult) document.getElementById('rf-ult').textContent='Última fecha: '+S5.ult;
-  document.querySelectorAll('.btn-m').forEach(b=>{{
-    b.addEventListener('click',()=>{{
-      document.querySelectorAll('.btn-m').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active');
-      monAct=b.dataset.m; updRF();
-    }});
-  }});
-  document.getElementById('selMon').addEventListener('change',updScat);
-  updRF(); updScat();
-}}
+  if(D.s5.ult) document.getElementById('rf-ult').textContent='Datos al: '+D.s5.ult;
 
-function updRF(){{
-  const md=S5.by_mon[monAct]; if(!md) return;
-  const curva=md.curva, tr=Object.keys(curva);
-  if(cCurva)cCurva.destroy();
-  cCurva=new Chart(document.getElementById('cCurva'),{{
+  // Cards resumen por tipo/moneda
+  const rc=document.getElementById('rf-cards');
+  const tcols={{Soberano:NAVY,BCRP:TEAL,Corporativo:'#2f81f7'}};
+  ['Soberano','BCRP','Corporativo'].forEach(t=>{{
+    const d=(D.s5.resumen[t]||{{}})['PEN']; if(!d) return;
+    rc.innerHTML+=`<div class="card card-accent">
+      <div class="panel-sub">${{t}} · PEN</div>
+      <div style="font-size:22px;font-weight:700;color:${{tcols[t]}}">${{d.tir_med.toFixed(3)}}%</div>
+      <div class="panel-sub">TIR mediana · n=${{d.n}} · [${{d.tir_min.toFixed(2)}}%–${{d.tir_max.toFixed(2)}}%]</div>
+    </div>`;
+  }});
+  const cu=(D.s5.resumen['Corporativo']||{{}})['USD'];
+  if(cu) rc.innerHTML+=`<div class="card card-accent">
+    <div class="panel-sub">Corporativo · USD</div>
+    <div style="font-size:22px;font-weight:700;color:#2f81f7">${{cu.tir_med.toFixed(3)}}%</div>
+    <div class="panel-sub">TIR mediana · n=${{cu.n}} · [${{cu.tir_min.toFixed(2)}}%–${{cu.tir_max.toFixed(2)}}%]</div>
+  </div>`;
+
+  // Plot 1: Curvas soberana PEN + VAC + BCRP
+  const cs=D.s5.curva_sob, cv=D.s5.curva_sob_vac, cb=D.s5.curva_bcrp;
+  cCurSob=new Chart(document.getElementById('cCurvasSob'),{{
     type:'line',
-    data:{{
-      labels:tr,
-      datasets:[{{
-        label:'TIR mediana '+monAct+' ('+md.ult+')',
-        data:tr.map(t=>curva[t]),
+    data:{{datasets:[
+      {{label:'Soberano PEN (nominal)',
+        data:cs.years.map((y,i)=>({{x:y,y:cs.tirs[i]}})),
         borderColor:NAVY,backgroundColor:'rgba(30,46,110,.08)',
-        fill:true,tension:.4,pointRadius:6,pointBackgroundColor:NAVY,borderWidth:2,
-      }}]
-    }},
-    options:{{
-      responsive:true,
-      scales:{{y:{{ticks:{{callback:v=>v!=null?v.toFixed(2)+'%':'—'}},grid:{{color:'rgba(0,0,0,.05)'}}}},
-               x:{{grid:{{color:'rgba(0,0,0,.05)'}}}}}}
+        fill:true,tension:.4,pointRadius:6,pointBackgroundColor:NAVY,borderWidth:2.5}},
+      {{label:'Soberano VAC (real)',
+        data:cv.years.map((y,i)=>({{x:y,y:cv.tirs[i]}})),
+        borderColor:TEAL,fill:false,tension:.4,pointRadius:5,
+        pointBackgroundColor:TEAL,borderWidth:2,borderDash:[6,3]}},
+      {{label:'BCRP CD (política monetaria)',
+        data:cb.years.map((y,i)=>({{x:y,y:cb.tirs[i]}})),
+        borderColor:CAMBER,fill:false,tension:.3,pointRadius:7,
+        pointBackgroundColor:CAMBER,borderWidth:2,pointStyle:'triangle'}},
+    ]}},
+    options:{{responsive:true,
+      plugins:{{legend:{{position:'top'}},
+        tooltip:{{callbacks:{{label:c=>`${{c.dataset.label}}: ${{c.parsed.y.toFixed(3)}}%`}}}}}},
+      scales:{{
+        x:{{type:'linear',title:{{display:true,text:'Año de Vencimiento'}},
+           ticks:{{stepSize:2}},grid:{{color:'rgba(0,0,0,.05)'}}}},
+        y:{{title:{{display:true,text:'TIR %'}},
+           ticks:{{callback:v=>v.toFixed(2)+'%'}},grid:{{color:'rgba(0,0,0,.05)'}}}}
+      }}
     }}
   }});
 
-  const gr=md.por_grado, gk=Object.keys(gr).filter(g=>gr[g].n>0);
-  const gcol={{'Investment Grade':CGREEN,'Speculative Grade':CRED,'Corto Plazo':TEAL,'Sin Rating':GRAY2}};
-  if(cGrado)cGrado.destroy();
-  cGrado=new Chart(document.getElementById('cGrado'),{{
+  // Plot 2: Spread barras + línea eje secundario
+  const sd=D.s5.spread_data;
+  cSpr=new Chart(document.getElementById('cSpread'),{{
     type:'bar',
     data:{{
-      labels:gk,
-      datasets:[{{
-        label:'TIR mediana '+monAct,
-        data:gk.map(g=>gr[g].tir),
-        backgroundColor:gk.map(g=>(gcol[g]||GRAY2)+'cc'),
-        borderColor:gk.map(g=>gcol[g]||GRAY2),
-        borderWidth:1,borderRadius:5,
-      }}]
+      labels:sd.map(d=>d.year),
+      datasets:[
+        {{label:'TIR Corporativo PEN',data:sd.map(d=>d.corp),
+          backgroundColor:'rgba(30,46,110,.65)',borderRadius:4,order:2}},
+        {{label:'TIR Soberano PEN (ref)',data:sd.map(d=>d.sob),
+          backgroundColor:'rgba(0,174,203,.65)',borderRadius:4,order:2}},
+        {{label:'Spread (pb)',data:sd.map(d=>+(d.spread*100).toFixed(1)),
+          type:'line',borderColor:CRED,backgroundColor:'transparent',
+          pointRadius:5,pointBackgroundColor:CRED,borderWidth:2,yAxisID:'y2',order:1}},
+      ]
     }},
-    options:{{
-      responsive:true,plugins:{{legend:{{display:false}},
-        tooltip:{{callbacks:{{afterLabel:ctx=>'n = '+gr[gk[ctx.dataIndex]].n+' instrumentos'}}}}}},
-      scales:{{y:{{ticks:{{callback:v=>v!=null?v.toFixed(2)+'%':'—'}},grid:{{color:'rgba(0,0,0,.05)'}}}}}}
+    options:{{responsive:true,
+      plugins:{{legend:{{position:'top'}},
+        tooltip:{{callbacks:{{label:c=>c.dataset.label==='Spread (pb)'
+          ?`Spread: ${{c.raw}}pb`:`${{c.dataset.label}}: ${{Number(c.raw).toFixed(3)}}%`}}}}}},
+      scales:{{
+        x:{{title:{{display:true,text:'Año de Vencimiento'}},grid:{{color:'rgba(0,0,0,.05)'}}}},
+        y:{{title:{{display:true,text:'TIR %'}},ticks:{{callback:v=>v.toFixed(2)+'%'}},grid:{{color:'rgba(0,0,0,.05)'}}}},
+        y2:{{position:'right',title:{{display:true,text:'Spread (pb)'}},
+             ticks:{{callback:v=>v+'pb'}},grid:{{display:false}}}}
+      }}
     }}
   }});
+
+  // Plot 3: Scatter por tipo
+  document.getElementById('selMonRF').addEventListener('change', updScatRF);
+  updScatRF();
 }}
 
-function updScat(){{
-  const mf=document.getElementById('selMon').value;
-  let pts=S5.scatter||[];
+function updScatRF(){{
+  const mf=document.getElementById('selMonRF').value;
+  let pts=(D.s5.scatter||[]);
   if(mf!=='TODAS') pts=pts.filter(p=>p.mon===mf);
-  const gcol={{'Investment Grade':'rgba(46,201,122,.75)','Speculative Grade':'rgba(232,67,67,.75)','Corto Plazo':'rgba(0,174,203,.75)','Sin Rating':'rgba(126,128,131,.5)'}};
-  if(cScat)cScat.destroy();
-  cScat=new Chart(document.getElementById('cScatter'),{{
-    type:'scatter',
-    data:{{
-      datasets:['Investment Grade','Speculative Grade','Corto Plazo','Sin Rating'].map(g=>{{
-        const sub=pts.filter(p=>p.g===g);
-        return{{
-          label:g,
-          data:sub.map(p=>({{x:p.dur,y:p.tir,e:p.e,n:p.n,mon:p.mon,rat:p.rat,sp:p.sp}})),
-          backgroundColor:gcol[g],pointRadius:5,pointHoverRadius:8,
-        }};
-      }})
-    }},
-    options:{{
-      responsive:true,
-      plugins:{{
-        legend:{{position:'top'}},
+  const cmap={{
+    'Soberano':          NAVY,
+    'BCRP':              TEAL,
+    'Corporativo_IG':    '#2f81f7',
+    'Corporativo_CP':    CAMBER,
+    'Corporativo_Spec':  CRED,
+    'Corporativo_NR':    GRAY2,
+  }};
+  const dsets=[
+    {{k:'Soberano',       lbl:'Soberano (GOB.CENTRAL)', fn:p=>p.tipo==='Soberano'}},
+    {{k:'BCRP',           lbl:'BCRP (Certificados CD)', fn:p=>p.tipo==='BCRP'}},
+    {{k:'Corporativo_IG', lbl:'Corp — Inv.Grade',       fn:p=>p.tipo==='Corporativo'&&p.g==='Investment Grade'}},
+    {{k:'Corporativo_CP', lbl:'Corp — Corto Plazo',     fn:p=>p.tipo==='Corporativo'&&p.g==='Corto Plazo'}},
+    {{k:'Corporativo_Spec',lbl:'Corp — Speculative',    fn:p=>p.tipo==='Corporativo'&&p.g==='Speculative Grade'}},
+    {{k:'Corporativo_NR', lbl:'Corp — Sin Rating',      fn:p=>p.tipo==='Corporativo'&&p.g==='Sin Rating'}},
+  ].map(d=>({{
+    label:d.lbl,
+    data:pts.filter(d.fn).map(p=>({{x:p.dur,y:p.tir,e:p.e,n:p.n,mon:p.mon,rat:p.rat,sp:p.sp,yr:p.yr}})),
+    backgroundColor:(cmap[d.k]||GRAY2)+'bb',pointRadius:5,pointHoverRadius:8,
+  }}));
+  if(cScatRF) cScatRF.destroy();
+  cScatRF=new Chart(document.getElementById('cScatterRF'),{{
+    type:'scatter',data:{{datasets:dsets}},
+    options:{{responsive:true,
+      plugins:{{legend:{{position:'top'}},
         tooltip:{{callbacks:{{label:c=>{{
           const d=c.raw;
           return[d.e+' ('+d.n+')',
-                 'TIR: '+d.y.toFixed(3)+'% | Dur: '+d.x.toFixed(2)+'a',
+                 'TIR: '+d.y.toFixed(3)+'% | Dur: '+d.x.toFixed(2)+'a | Venc: '+(d.yr||'—'),
                  'Spread: '+(d.sp!=null?d.sp.toFixed(3)+'%':'—')+' | '+d.mon+' | '+d.rat];
-        }}}}}}
-      }},
+        }}}}}}}}}},
       scales:{{
         x:{{title:{{display:true,text:'Duración (años)'}},min:0,grid:{{color:'rgba(0,0,0,.05)'}}}},
         y:{{title:{{display:true,text:'TIR %'}},ticks:{{callback:v=>v.toFixed(2)+'%'}},grid:{{color:'rgba(0,0,0,.05)'}}}}
