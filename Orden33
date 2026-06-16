@@ -1,0 +1,104 @@
+
+
+
+
+Perfecto. Voy a leer la respuesta de Claude con cuidado y darte una lista de trabajo concreta y accionable.
+
+---
+
+## Lo que necesitas conseguir y cómo estructurarlo
+
+Claude identificó que el **Parámetro 4 (sequía → utilities hidro)** es el único calibrable ahora mismo con datos públicos accesibles y series largas. Los otros tres tienen limitaciones serias que no se resuelven rápido. Entonces te enfocas solo en esto.
+
+---
+
+## Los datos que debes conseguir
+
+**Fuente 1 — COES (generación hidroeléctrica mensual)**
+
+Ve a coes.org.pe → Publicaciones → Estadísticas → Generación. Necesitas la generación mensual en GWh por central hidroeléctrica, desde 2000 hasta 2024. Descárgalo y arma un Excel con esta estructura exacta:
+
+```
+| año | mes | central | empresa | cuenca | GWh |
+```
+
+Las centrales que te interesan son las de Engie, Orazen y Orygen que ya tienes en tu hoja "Centrales Eléctricas".
+
+**Fuente 2 — SENAMHI (índice de sequía SPI por cuenca)**
+
+Ve a senamhi.gob.pe → Datos → Hidrología → PISCO. Necesitas el SPI-12 (acumulado 12 meses) por cuenca, mismo período 2000-2024. Estructura:
+
+```
+| año | mes | cuenca | SPI_12 | SPI_24 |
+```
+
+Las cuencas que te interesan son las que corresponden a cada central de tu portafolio — las cruzas con las coordenadas que ya tienes en "Centrales Eléctricas".
+
+**Fuente 3 — SMV (EBITDA de utilities)**
+
+Ve a smv.gob.pe → Mercado de Valores → Empresas → Estados Financieros. Descarga los estados financieros anuales de Engie, Orazen y Orygen desde 2000. Necesitas solo una columna:
+
+```
+| año | empresa | EBITDA_soles |
+```
+
+---
+
+## Cómo entregar todo esto a Claude
+
+Una vez que tengas esos tres archivos, los combinas en un solo Excel con tres hojas:
+
+**Hoja 1 — "Generacion"**
+```
+año | mes | central | empresa | cuenca | GWh
+```
+
+**Hoja 2 — "SPI"**
+```
+año | mes | cuenca | SPI_12 | SPI_24
+```
+
+**Hoja 3 — "EBITDA"**
+```
+año | empresa | EBITDA_soles
+```
+
+---
+
+## El prompt que llevas a Claude con ese archivo adjunto
+
+```
+Adjunto el archivo de calibración con tres hojas:
+Generacion (GWh mensual por central), SPI (índice 
+de sequía por cuenca) y EBITDA (anual por empresa).
+
+Las centrales ya están mapeadas a sus cuencas.
+
+Necesito que hagas dos cosas:
+
+1. CALIBRACIÓN EN DOS ETAPAS
+Etapa 1: panel con efecto fijo de central,
+genera el modelo: GWh_it = α_i + β·SPI_cuenca,t 
++ lags SPI-12 y SPI-24 + estacionalidad mensual + ε
+Etapa 2: convierte ΔgeneraciónGWh en ΔEBITDA 
+usando margen por empresa de los estados financieros
+
+Reporta los coeficientes estimados, su intervalo 
+de confianza al 95%, y el R² del modelo.
+
+2. CÓDIGO ACTUALIZADO
+Con los coeficientes calibrados, reescribe 
+la función de sequía en rf_extension.py 
+reemplazando SEQ_FLOW_BINS placeholder por 
+los parámetros estimados, documentando en cada 
+comentario la fuente del dato y el método 
+estadístico usado.
+
+El código debe respetar el contrato de blindaje: 
+no toca nada del pipeline original, solo actualiza 
+rf_extension.py.
+```
+
+---
+
+Con ese archivo y ese prompt, Claude tiene todo lo que necesita para darte el código calibrado en un solo mensaje. El trabajo tuyo es conseguir esos tres archivos — el resto lo hace Claude.
