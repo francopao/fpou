@@ -1,0 +1,195 @@
+"""
+portfolio_peru_map.py
+Visualiza exposición geográfica del portafolio por departamento peruano.
+Cada departamento se subdivide en subzonas proporcionales a:
+    peso = AUM × exposición × riesgo_físico
+
+Dependencias: pip install geopandas matplotlib shapely numpy requests
+"""
+
+import os
+import urllib.request
+import numpy as np
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path
+from shapely.geometry import box, Polygon, MultiPolygon, GeometryCollection
+
+# ── 1. DESCARGA SHAPEFILE ──────────────────────────────────────────────────────
+
+GEOJSON_PATH = "/tmp/peru_dptos.geojson"
+GEOJSON_URL  = (
+    "https://raw.githubusercontent.com/juaneladio/peru-geojson"
+    "/master/peru_departamental_simple.geojson"
+)
+if not os.path.exists(GEOJSON_PATH):
+    urllib.request.urlretrieve(GEOJSON_URL, GEOJSON_PATH)
+
+gdf = gpd.read_file(GEOJSON_PATH)  # columna: NOMBDEP
+
+# ── 2. COLORES FIJOS ───────────────────────────────────────────────────────────
+
+EMPRESA_COLOR = {
+    "BVN":        "#2563EB",
+    "BAP":        "#F97316",
+    "Pacasmayo":  "#16A34A",
+    "Pluz":       "#DC2626",
+    "Ferreycorp": "#7C3AED",
+    "Otros":      "#9CA3AF",
+}
+
+# ── 3. PORTAFOLIO POR DEPARTAMENTO ────────────────────────────────────────────
+# Formato: "DEPARTAMENTO": [(empresa, AUM_M, exposicion_pct, riesgo_fisico), ...]
+# Máximo 3 empresas + "Otros". Departamentos sin entrada → solo "Otros".
+
+PORTFOLIO = {
+    "CAJAMARCA":    [("BVN", 120, 0.85, 0.90), ("BAP", 30, 0.30, 0.50), ("Otros", 10, 0.20, 0.40)],
+    "LA LIBERTAD":  [("Pacasmayo", 80, 0.70, 0.65), ("BAP", 40, 0.45, 0.50), ("BVN", 25, 0.35, 0.60), ("Otros", 8, 0.20, 0.35)],
+    "ANCASH":       [("BVN", 95, 0.80, 0.85), ("Ferreycorp", 30, 0.50, 0.55), ("Otros", 12, 0.25, 0.40)],
+    "LIMA":         [("BAP", 200, 0.65, 0.30), ("Pluz", 80, 0.75, 0.40), ("Ferreycorp", 60, 0.55, 0.35), ("Otros", 25, 0.20, 0.25)],
+    "CALLAO":       [("BAP", 50, 0.60, 0.35), ("Ferreycorp", 35, 0.50, 0.40), ("Otros", 10, 0.20, 0.30)],
+    "ICA":          [("Pluz", 45, 0.65, 0.55), ("BAP", 30, 0.40, 0.40), ("Otros", 12, 0.25, 0.35)],
+    "AREQUIPA":     [("BVN", 90, 0.80, 0.85), ("Ferreycorp", 50, 0.65, 0.70), ("Pluz", 35, 0.50, 0.60), ("Otros", 15, 0.25, 0.40)],
+    "MOQUEGUA":     [("BVN", 60, 0.75, 0.80), ("Ferreycorp", 20, 0.55, 0.60), ("Otros", 8, 0.20, 0.35)],
+    "TACNA":        [("BVN", 45, 0.75, 0.95), ("Otros", 15, 0.30, 0.50)],
+    "PUNO":         [("BVN", 40, 0.70, 0.75), ("Pacasmayo", 15, 0.35, 0.45), ("Otros", 12, 0.25, 0.40)],
+    "CUSCO":        [("BVN", 35, 0.65, 0.70), ("Ferreycorp", 20, 0.50, 0.55), ("Otros", 10, 0.20, 0.35)],
+    "PIURA":        [("BAP", 55, 0.50, 0.60), ("Pacasmayo", 30, 0.45, 0.55), ("Otros", 12, 0.25, 0.40)],
+    "LAMBAYEQUE":   [("BAP", 40, 0.45, 0.50), ("Pacasmayo", 25, 0.40, 0.50), ("Otros", 10, 0.20, 0.35)],
+    "JUNIN":        [("BVN", 30, 0.55, 0.65), ("Pluz", 20, 0.45, 0.50), ("Otros", 8, 0.20, 0.35)],
+    "HUANCAVELICA": [("Pluz", 25, 0.60, 0.55), ("Otros", 8, 0.20, 0.35)],
+    "AYACUCHO":     [("BVN", 20, 0.50, 0.60), ("Otros", 8, 0.20, 0.35)],
+    "APURIMAC":     [("BVN", 25, 0.60, 0.70), ("Otros", 8, 0.20, 0.35)],
+    "HUANUCO":      [("Otros", 10, 0.20, 0.35)],
+    "PASCO":        [("BVN", 18, 0.55, 0.65), ("Otros", 6, 0.20, 0.30)],
+    "SAN MARTIN":   [("BAP", 15, 0.30, 0.40), ("Otros", 8, 0.20, 0.30)],
+    "AMAZONAS":     [("Otros", 8, 0.20, 0.30)],
+    "LORETO":       [("Otros", 12, 0.20, 0.30)],
+    "UCAYALI":      [("Otros", 10, 0.20, 0.30)],
+    "MADRE DE DIOS":[("Otros", 6, 0.15, 0.25)],
+    "TUMBES":       [("BAP", 10, 0.35, 0.45), ("Otros", 5, 0.20, 0.30)],
+}
+
+# Departamentos sin entrada → "Otros" por defecto
+for dep in gdf["NOMBDEP"].unique():
+    if dep not in PORTFOLIO:
+        PORTFOLIO[dep] = [("Otros", 5, 0.15, 0.25)]
+
+# ── 4. FUNCIONES AUXILIARES ────────────────────────────────────────────────────
+
+def pesos_normalizados(entradas):
+    w = np.array([aum * exp * rf for _, aum, exp, rf in entradas], dtype=float)
+    return w / w.sum()
+
+def extraer_polygons(geom):
+    if geom is None or geom.is_empty:
+        return []
+    if isinstance(geom, Polygon):
+        return [geom] if not geom.is_empty else []
+    if isinstance(geom, (MultiPolygon, GeometryCollection)):
+        result = []
+        for g in geom.geoms:
+            result.extend(extraer_polygons(g))
+        return result
+    return []
+
+def geom_a_patches(geom, **kw):
+    patches = []
+    for poly in extraer_polygons(geom):
+        ext = np.array(poly.exterior.coords)
+        codes = [Path.MOVETO] + [Path.LINETO] * (len(ext) - 2) + [Path.CLOSEPOLY]
+        verts = list(ext)
+        for interior in poly.interiors:
+            ic = np.array(interior.coords)
+            codes += [Path.MOVETO] + [Path.LINETO] * (len(ic) - 2) + [Path.CLOSEPOLY]
+            verts += list(ic)
+        patches.append(PathPatch(Path(verts, codes), **kw))
+    return patches
+
+def subdividir_vertical(poligono, pesos):
+    """Cortes verticales proporcionales a pesos dentro del bounding box."""
+    if poligono is None or poligono.is_empty:
+        return []
+    pesos = np.array(pesos, dtype=float) / np.sum(pesos)
+    mn_x, mn_y, mx_x, mx_y = poligono.bounds
+    ancho = mx_x - mn_x
+    subs, acum = [], 0.0
+    eps = 1e-6
+    for w in pesos:
+        banda = box(mn_x + acum * ancho - eps, mn_y - eps,
+                    mn_x + (acum + w) * ancho + eps, mx_y + eps)
+        sub = poligono.intersection(banda)
+        subs.append(sub)
+        acum += w
+    return subs
+
+# ── 5. FIGURA ──────────────────────────────────────────────────────────────────
+
+fig, ax = plt.subplots(figsize=(11, 15))
+ax.set_aspect("equal")
+ax.axis("off")
+fig.patch.set_facecolor("#F1F5F9")
+ax.set_facecolor("#BFDBFE")  # fondo oceánico
+
+for _, row in gdf.iterrows():
+    dep      = row["NOMBDEP"]
+    geom     = row["geometry"]
+    entradas = PORTFOLIO.get(dep, [("Otros", 5, 0.15, 0.25)])
+    pesos    = pesos_normalizados(entradas)
+
+    if len(entradas) == 1:
+        color = EMPRESA_COLOR.get(entradas[0][0], "#9CA3AF")
+        for p in geom_a_patches(geom, facecolor=color, edgecolor="none", alpha=0.85, zorder=2):
+            ax.add_patch(p)
+    else:
+        subzonas = subdividir_vertical(geom, pesos)
+        for idx, (empresa, *_) in enumerate(entradas):
+            if idx >= len(subzonas):
+                break
+            color = EMPRESA_COLOR.get(empresa, "#9CA3AF")
+            for p in geom_a_patches(subzonas[idx], facecolor=color, edgecolor="none", alpha=0.85, zorder=2):
+                ax.add_patch(p)
+
+    # Borde departamental
+    for p in geom_a_patches(geom, facecolor="none", edgecolor="#1E293B", linewidth=0.6, zorder=4):
+        ax.add_patch(p)
+
+# ── 6. LEYENDA ─────────────────────────────────────────────────────────────────
+
+leyenda = [
+    mpatches.Patch(facecolor=c, edgecolor="#374151", linewidth=0.7, label=e, alpha=0.88)
+    for e, c in EMPRESA_COLOR.items()
+]
+leg = ax.legend(
+    handles=leyenda, title="Empresa", title_fontsize=9, fontsize=8.5,
+    loc="lower left", frameon=True, framealpha=0.93,
+    edgecolor="#CBD5E1", facecolor="white",
+)
+leg.get_title().set_fontweight("bold")
+
+# ── 7. TÍTULO ──────────────────────────────────────────────────────────────────
+
+ax.set_title(
+    "Exposición Geográfica del Portafolio — Perú (24 departamentos)\n"
+    r"$\bf{Peso\ subzona}$ = AUM × Exposición × Riesgo Físico",
+    fontsize=12, fontweight="bold", color="#0F172A", pad=12,
+)
+fig.text(
+    0.5, 0.005,
+    "Subdivisión interna proporcional al peso económico ponderado por riesgo físico",
+    ha="center", fontsize=7.5, color="#64748B", style="italic",
+)
+
+# Ajuste de vista
+minx, miny, maxx, maxy = gdf.total_bounds
+ax.set_xlim(minx - 0.5, maxx + 0.5)
+ax.set_ylim(miny - 0.5, maxy + 0.5)
+
+# ── 8. GUARDAR ─────────────────────────────────────────────────────────────────
+
+OUTPUT = "/mnt/user-data/outputs/portfolio_peru_map.png"
+plt.savefig(OUTPUT, dpi=180, bbox_inches="tight", facecolor=fig.get_facecolor())
+print(f"Guardado: {OUTPUT}")
+plt.close()
