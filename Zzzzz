@@ -1,0 +1,53 @@
+Con gusto. Te lo escribo como una explicación que puedas leer de corrido y entender el *porqué* de cada pieza, no solo el *qué*.
+
+## El cambio de fondo: de "plata en riesgo" a pérdida esperada
+
+Tu dashboard original respondía una pregunta honesta pero limitada: *¿cuánta exposición tengo sentada en distritos peligrosos?* Lo hacía multiplicando exposición por el score CENEPRED (1-5). Eso es un *ranking con dinero pegado*: te ordena a quién mirar primero, pero el número en soles no significa nada económico. Un score de 4 no destruye "4 unidades" de valor.
+
+La metodología nueva responde otra pregunta, más exigente: *¿cuánto valor espero perder de verdad si el peligro se materializa?* El salto conceptual es reemplazar ese proxy lineal por una **función de daño**: una fracción del valor que efectivamente se destruye. El score deja de ser la respuesta y pasa a ser un *insumo* — una medida de intensidad que alimenta la función. Ese es el corazón de todo: `Pérdida = Exposición × damage_ratio`, donde `damage_ratio` es una fracción con sentido físico, no un puntaje.
+
+## Por qué los bins son convexos
+
+El eslabón delicado es traducir la clase CENEPRED 1-5 a una fracción de daño. Las curvas de Huizinga (la base de Roncalli/Amundi) mapean *intensidad física* — profundidad de inundación en metros — a fracción de daño. CENEPRED no te da metros, te da una clase de susceptibilidad. Así que hay que tender un puente, y ese puente es la tabla de bins: 1→0.02, 2→0.07, 3→0.15, 4→0.28, 5→0.45.
+
+Lo importante no son los números sino su *forma*: la progresión es convexa, no lineal. Pasar de 4 a 5 (0.28→0.45) duele mucho más que pasar de 1 a 2 (0.02→0.07). Esto codifica una verdad física y financiera real: el daño marginal se acelera en la cola alta. Un peligro extremo no es cinco veces un peligro leve; es desproporcionadamente peor. Si hubieras usado un escalado lineal, habrías *subestimado sistemáticamente el riesgo de cola* — justo el riesgo que a un fondo de pensiones le importa, porque es el que no se diversifica.
+
+## La idea más elegante: cómo tienes el activo cambia cuánto pierdes
+
+Aquí está la parte que casi ningún dashboard de riesgo climático captura, y viene de Azzone et al. vía Merton. El mismo edificio, la misma inundación, la misma empresa: la pérdida que *tú* sufres depende de si lo tienes en renta variable o en renta fija.
+
+La intuición es que el equity (RV) es un **reclamo residual y apalancado** sobre los activos de la empresa. Si los activos de la firma caen un X%, el patrimonio cae *más* que X% — aproximadamente en proporción a su apalancamiento (Activo/Patrimonio). Una empresa con activos de 100 y patrimonio de 30 tiene un apalancamiento de 3.3: un golpe del 10% a sus activos se traga un tercio de su equity. Por eso `ratio_RV = min(1, dr × Activo/Patrimonio)`: el daño físico se *amplifica* por la estructura de capital. El `min(1, ·)` es la cota natural — no puedes perder más del 100% de tu patrimonio.
+
+La deuda (RF), en cambio, es un reclamo *senior*: está más protegida y solo sufre en la cola, cuando el daño es tan grande que amenaza la solvencia. Por eso `ratio_RF = k × dr` con un `k` pequeño (0.15) y *sin* el apalancamiento. Es la misma empresa golpeada por el mismo evento, pero el bono pierde una fracción de lo que pierde la acción. Esto es economía financiera real metida en el modelo, no una corrección cosmética.
+
+## Stock contra flujo: por qué la sequía vive aparte
+
+Bressan et al. insisten en una distinción que es fácil de pasar por alto: hay shocks de **stock** y shocks de **flujo**. Un deslizamiento destruye una *cosa* — un activo que está en el balance. Una sequía no derriba la planta; estrangula la *caja* a lo largo del tiempo, golpea el EBITDA. Son objetos distintos en los estados financieros y **no se pueden sumar**.
+
+Meter la sequía en "daño al activo" sería un error de categoría: estarías sumando peras con manzanas. Por eso la sequía va en su propia columna, como shock de flujo, y por eso hoy aparece como *proxy* etiquetado — sin EBITDA real por emisor, lo honesto es marcarlo como pendiente y no fingir una cifra de pérdida de activo que conceptualmente no existe.
+
+## Dónde el modelo dice "hasta aquí"
+
+Los bancos son el ejemplo más claro de honestidad metodológica. ¿Cuál es la exposición física de un banco a una inundación? No son sus agencias. Es la *calidad crediticia de sus deudores* en los distritos inundados — el canal de probabilidad de default territorial (Chitchumnong et al.). Eso es un mecanismo completamente distinto del daño a un activo propio. Forzar al banco al marco de "daño al edificio" daría un número, pero sería un número equivocado.
+
+Por eso el modelo no calcula daño directo para bancos, soberanos ni extranjeros: los marca como **canal indirecto** y los aparta. Un buen modelo no es el que pretende cubrir todo; es el que sabe trazar el límite de lo que puede afirmar.
+
+## Vivir con parámetros que aún no son empíricos
+
+Varios números clave — `k`, los bins de sequía, el multiplicador ENSO — son juicios documentados, no estimaciones econométricas. La respuesta responsable a eso no es esconderlo: es la **pestaña de sensibilidad**. Al recalcular la pérdida moviendo los `damage_ratios` ±30%, conviertes la incertidumbre en una banda visible. Y aquí hay un matiz útil: si el *ranking* de empresas se mantiene estable bajo ±30%, puedes confiar en el orden aunque no confíes en los valores absolutos. La sensibilidad separa lo que el modelo sabe (quién está más expuesto) de lo que aún no sabe con precisión (cuánto exactamente).
+
+El multiplicador ENSO agrega la otra dimensión que falta: el riesgo físico **no es estático**. El mismo distrito de Piura tiene una probabilidad de inundación distinta en un año de El Niño Costero que en uno neutro. Condicionar la pérdida al estado vigente que reportan ENFEN e ICEN convierte un mapa fijo en uno *dependiente del estado del clima*. Hoy el ICEN en 1.34 con alerta activa no es un dato de adorno: es la condición que escala el daño en la costa norte.
+
+## Cómo la metodología *es* el código
+
+Lo que pediste — la relación con el código — tiene una respuesta limpia: en este diseño, **la metodología y el código son la misma cosa**, no dos capas separadas. Cada idea económica es una función o una constante, y puedes auditar el modelo entero leyendo cinco constantes al inicio del archivo: `DAMAGE_RATIO_BINS` es la función de daño, `K_RF` es la protección de la deuda, `SEQ_FLOW_BINS` es el canal de flujo, `ENSO_MULT` es el estado climático. Los supuestos están *hechos legibles*; no hay nada escondido en la lógica.
+
+El núcleo es minúsculo a propósito: `_pe_punto()` calcula la pérdida de un solo punto — un emisor, un distrito, un peligro — y aplica ahí toda la economía (apalancamiento, cota, atenuación de RF). Todo lo demás es agregación y escenarios *alrededor* de ese átomo. Por eso la sensibilidad y el ENSO **reutilizan exactamente la misma función**: no pueden derivar del caso base, porque están construidos sobre la misma pieza. Esa consistencia no es disciplina manual, es estructural.
+
+Y el hecho de que viva en un módulo aparte, sin tocar tu pipeline, también tiene sentido metodológico: la capa de *exposición* — la parte dura, validada, geolocalizada — queda intacta y sagrada. La capa de *interpretación de pérdida* se monta encima de forma transparente, y puedes recalibrarla, cuestionarla o reemplazarla sin poner en riesgo lo que ya funciona.
+
+## Lo que todavía no puedes afirmar
+
+Para cerrar con la misma honestidad que tiene el modelo: el puente clase-CENEPRED → fracción de daño es el supuesto más frágil de todos (una clase de susceptibilidad no es una intensidad medida); el split RV/RF se asume uniforme en la geografía de cada emisor; el apalancamiento sale de valores contables en un punto del tiempo; y `k`, los bins de sequía y el multiplicador ENSO son placeholders hasta que los calibres con daños históricos de 2017 y 2023. Nada de esto invalida el framework — define exactamente qué tendrías que medir después para pasar de un modelo *defendible* a uno *empíricamente anclado*.
+
+Si quieres, puedo convertir esto en un documento formal de metodología (Word o PDF) para tu comité de riesgos, o desarrollar en más profundidad cualquiera de las secciones.
