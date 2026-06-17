@@ -1,0 +1,52 @@
+Esta es la pregunta correcta para el salto de calidad. Voy a buscar fuentes reales —primero qué ofrecen tus 26 papers sobre funciones de vulnerabilidad, y luego alternativas gratuitas y creíbles a MSCI/Morningstar, varias específicas para Perú/Latinoamérica que quizá no estés considerando. Empiezo por los papers del proyecto.Los papers me dan el andamiaje riguroso: el damage ratio bien fundado es la **Annualised Damage Rate** (daño esperado por unidad de exposición), y se construye con la lógica de **Pérdida Anual Esperada** de Battiston (suma sobre periodos de retorno de probabilidad × daño × exposición). Eso me dice exactamente qué datos faltan. Ahora busco las fuentes gratuitas y creíbles —varias para Perú/LatAm— que reemplacen a MSCI. Empiezo por la capa de intensidad de inundación.Confirmado un salto enorme: **WRI Aqueduct Floods y JRC** dan profundidad de inundación en metros por periodo de retorno (2 a 1000 años), gratis y descargable, por ubicación de activo. Eso reemplaza el proxy del score por intensidad real. Ahora confirmo el "motor" que integra todo (CLIMADA) y las funciones de vulnerabilidad/exposición para Latinoamérica.CLIMADA es el hallazgo grande: el motor **gratuito y open-source de ETH Zurich** que hace exactamente lo que hace MSCI (integra hazard × exposición × vulnerabilidad y calcula la Pérdida Anual Esperada por periodo de retorno), avalado por EIOPA. Una búsqueda más para anclar con un benchmark de pérdida anual ya publicado para Perú y la herramienta de vulnerabilidad de Latinoamérica.Verifiqué todo. La buena noticia es grande: **se puede tener un damage ratio fundado, gratis, y para tu mayor exposición (inundación) se puede hacer ya.** Te explico el salto de calidad, qué dato exacto llena cada hueco, y qué necesito de ti para arrancar.
+
+## El desbloqueo conceptual
+
+El damage ratio que puedes defender no es una fracción que alguien estime; es el **resultado de convolucionar tres capas**. Tus propios papers lo dicen: Roncalli define el daño como una función D(intensidad) ∈ [0,1], y Battiston (asset-level) da la fórmula de Pérdida Anual Esperada, EAI = Σ exposición × daño(evento) × frecuencia. El PRI le pone nombre financiero: lo que buscas es la **Annualised Damage Rate (ADR)** —daño esperado por unidad de exposición— que es justamente la pérdida financiera esperada por cada unidad de valor del activo.
+
+En interpretable y sin inventar nada:
+
+ADR = Σ sobre periodos de retorno de (probabilidad anual del evento) × (fracción de daño a esa intensidad)
+
+El resultado es un número entre 0 y 1 que significa "fracción del valor del activo que espero perder por año". Cada término viene de una fuente. Eso es lo defendible. Hoy usas el score como proxy de intensidad; el salto es reemplazar ese proxy por **intensidad real modelada por periodo de retorno**.
+
+## Capa 1 — Intensidad del peligro por periodo de retorno (el hueco que más pesa, y es gratis)
+
+**Inundación:** **WRI Aqueduct Floods** te da profundidad de inundación en metros, fluvial y costera, para nueve periodos de retorno (de 2 a 1000 años), descargable, presente y futuro (2030/2050/2080) bajo RCP4.5/8.5. Los mapas descargables muestran tirante en metros y fueron creados por WRI con Deltares, la Vrije Universiteit Amsterdam y PBL. Complemento: los **JRC Global River Flood Hazard Maps v2.1**, una grilla de inundación para siete periodos de retorno (de 1-en-10 a 1-en-500 años). Con esto, en la coordenada exacta de cada activo tienes el tirante por periodo de retorno, que entra directo a la curva Huizinga que ya tienes. Pasas de "proxy declarado" a "transferido/calibrado".
+
+**Sequía:** SPI/SPEI por cuenca de SENAMHI/PISCO (ya identificado) como índice de intensidad.
+
+**Movimientos en masa:** aquí la intensidad por periodo de retorno es genuinamente más difícil globalmente; te apoyas en la susceptibilidad INGEMMET/CENEPRED y el inventario Valderrama. Sé honesto de que MM se queda más grueso.
+
+## Capa 2 — Vulnerabilidad (la curva daño-vs-intensidad, anclada a literatura)
+
+Ya tienes Huizinga (JRC). Para enriquecerla y no depender de una sola curva continental:
+
+**CAPRA** (Plataforma de Evaluación Probabilística del Riesgo, GFDRR/Banco Mundial), construida para Latinoamérica y usada en Perú con financiamiento de GFDRR para fortalecer la capacidad técnica de cuantificar riesgo: trae funciones de vulnerabilidad por componente de infraestructura, gratis.
+
+**Perfil de riesgo de desastres para Perú** (BID/Banco Mundial, 2014): cuantifica el riesgo del Perú con exposición de infraestructura, vulnerabilidad específica de cada componente y convolución amenaza-vulnerabilidad. Es una fuente peruana con funciones de vulnerabilidad por tipo de activo y pérdida anual esperada por sector.
+
+## Capa 3 — Valor expuesto (el denominador; esto solo lo tienes tú)
+
+Para que sea un ratio necesitas el valor de reposición del activo. Lo mejor es tu propio registro de activos por empresa (valor de planta, central, mina). Alternativas abiertas si falta: las exposiciones de CLIMADA (LitPop, luces nocturnas × población × PBI) o el stock de capital de INEI. Este es el insumo que **solo tú puedes aportar** y el que más eleva la calidad.
+
+## El motor gratuito = el MSCI open-source
+
+No necesitas pagar MSCI para hacer esta convolución. **CLIMADA** (ETH Zurich) es un software libre y de código abierto que integra hazard, exposición y vulnerabilidad para calcular las métricas de riesgo; da cobertura global de los principales peligros a 4×4 km vía una API de datos y calcula impacto probabilístico, daño evitado e incertidumbre, y entrega directamente la **Average Annual Impact** y la pérdida por periodo de retorno. La propia EIOPA lo lista como herramienta open-source para riesgo climático, junto con el **Oasis Loss Modelling Framework**. Es, literalmente, el motor que hace lo que hace MSCI, gratis y auditable. Si prefieres no montar CLIMADA, la misma convolución se hace en pocas líneas: tirante Aqueduct por RP × curva Huizinga × valor → ADR.
+
+## Anclas peruanas para validar y poner banda de razonabilidad
+
+Para que el comité crea el número, contrástalo contra realidad, no lo inventes:
+- **Validación con pérdidas reales:** EM-DAT (lo tienes), DesInventar Perú (UNDRR), y los catastros EDAN/ARCC 2017 y 2023.
+- **Benchmark publicado peruano:** el perfil BID/Banco Mundial trae pérdida anual esperada por sector; el Risk Profile Visualizer del Banco Mundial da >100 métricas de riesgo comparables entre países.
+- **Banda de razonabilidad de mercado:** el propio reporte de MSCI "Hidden in Plain Sight" publica, en su gráfico, el daño de activo como porcentaje del valor de activo fijo por peligro (la inundación pluvial y costera son las que dominan el daño de activo) — eso lo lees sin suscripción y te da el orden de magnitud esperado para sanity-check. El paper de FVM del proyecto da otra banda (factores α de 0.006 a 0.183).
+
+## Qué es realista por peligro (honestidad)
+
+Inundación: alcanzable ya, fundado y gratis (Aqueduct + Huizinga + valor → ADR). Es tu mayor exposición y tu mejor retorno de esfuerzo. Movimientos en masa: parcial; susceptibilidad + Valderrama, sin periodo de retorno fino → se queda categórico. Sequía: índice SPI por cuenca como intensidad, pero el vínculo a EBITDA sigue siendo el eslabón débil. FEN operativo: confirmamos que no se aísla con ICEN; queda fuera.
+
+## Qué necesito de ti para arrancar
+
+Tres cosas y construyo la convolución real para inundación: (1) las **coordenadas** (o al menos distrito preciso) y el **valor de reposición** de los activos principales por empresa —el registro de activos—; (2) si puedes correr Python/CLIMADA en tu entorno o prefieres la convolución ligera en el script; (3) si CENEPRED te dio tirantes EVAR por zona, pásamelos, aunque con Aqueduct ya no son imprescindibles. Con eso reemplazo el proxy del score por un damage ratio de inundación trazable a WRI/Deltares + Huizinga, interpretable como pérdida anual esperada por sol expuesto, y lo dejo anclado contra las pérdidas reales de 2017.
+
+Si quieres, te preparo el listado exacto de archivos a descargar de Aqueduct para Perú (los rásters por periodo de retorno) y el esqueleto de la convolución, para que el equipo de datos lo ejecute.
