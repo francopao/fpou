@@ -1,0 +1,79 @@
+# %% ============================================================================
+# EXPORTAR MÚLTIPLOS DIARIOS POR SECTOR GICS
+# Estructura IDÉNTICA a Multiplos_hist.xlsx (una hoja por sector, encabezado de
+# dos niveles: fila 1 = Empresa, fila 2 = Múltiplo), pero conservando la rejilla
+# diaria completa (sin eliminar filas).
+# ==============================================================================
+
+def exportar_multiplos_diarios_xlsx(matriz_multiplos: dict,
+                                    ruta_zoda: str,
+                                    ruta_salida: str) -> None:
+    """
+    Crea Multiplos_diarios.xlsx con la MISMA organización que Multiplos_hist.xlsx:
+      - una hoja por sector GICS,
+      - dentro de cada hoja, columnas con encabezado de dos niveles
+        (primera fila = nombre de Empresa, segunda fila = nombre del Múltiplo),
+      - índice = Fecha diaria.
+
+    Diferencia con Multiplos_hist.xlsx:
+      - Aquí NO se eliminan las filas. Se conserva toda la rejilla diaria y se
+        dejan celdas vacías donde no hay dato (para que sea realmente "diario").
+
+    De dónde sale el nombre de empresa de la primera fila:
+      - De la hoja "GICS" de ZODA.xlsm. La columna 'BBG' es el ticker y la
+        columna 'Empresa' es el nombre legible; 'GICS' es el sector (la pestaña).
+      - Si un ticker no está en la hoja GICS, se usa el ticker crudo como nombre
+        y cae en la pestaña "Sin GICS" (mismo comportamiento que el hist).
+    """
+    print("  → Exportando múltiplos diarios por sector GICS...")
+
+    # 1) Diccionarios ticker→Empresa y ticker→GICS desde la hoja GICS
+    dic = leer_hoja_excel(ruta_zoda, "GICS", con_encabezado=True)
+    dic = dic.apply(lambda c: c.str.strip() if c.dtype == "object" else c)
+    mapa_emp  = dic.set_index("BBG")["Empresa"].to_dict()
+    mapa_gics = dic.set_index("BBG")["GICS"].to_dict()
+
+    # 2) Apilar todos los múltiplos de todas las empresas en formato largo
+    concat = pd.concat(matriz_multiplos, names=["Activo", "Fecha"]).reset_index()
+    cols_mult = [c for c in concat.columns if c not in ("Activo", "Fecha")]
+
+    largo = concat.melt(
+        id_vars=["Activo", "Fecha"],
+        value_vars=cols_mult,
+        var_name="Multiplo", value_name="Valor"
+    )
+    largo["Fecha"] = pd.to_datetime(largo["Fecha"], errors="coerce")
+    largo["Valor"] = pd.to_numeric(largo["Valor"], errors="coerce")
+
+    # Los 0 artificiales (inf→0 de multiplos()) se tratan como "sin dato"
+    # para no exportar ceros falsos. A diferencia de Multiplos_hist, NO se hace
+    # dropna de filas: queremos conservar la rejilla diaria completa.
+    largo.loc[largo["Valor"] == 0, "Valor"] = np.nan
+
+    # 3) Pivotear a formato ancho: Fecha × [Activo, Multiplo]
+    ancho = (
+        largo
+        .pivot(index="Fecha", columns=["Activo", "Multiplo"], values="Valor")
+        .sort_index(axis=0).sort_index(axis=1)
+    )
+
+    # 4) Renombrar ticker→Empresa y mapear su sector GICS
+    nuevas_cols = [(mapa_emp.get(a, a), m) for a, m in ancho.columns]
+    sectores    = [mapa_gics.get(a, "Sin GICS") for a, _ in ancho.columns]
+    ancho.columns = pd.MultiIndex.from_tuples(
+        nuevas_cols, names=["Empresa", "Multiplo"]
+    )
+
+    df_sec = pd.DataFrame({
+        "Empresa": [c[0] for c in ancho.columns],
+        "GICS":    sectores
+    }).drop_duplicates()
+
+    # 5) Una hoja por sector, mismas columnas y encabezados que Multiplos_hist
+    with pd.ExcelWriter(ruta_salida, engine="openpyxl") as writer:
+        for sector in sorted(df_sec["GICS"].unique()):
+            emps = df_sec.loc[df_sec["GICS"] == sector, "Empresa"]
+            cols_sec = [c for c in ancho.columns if c[0] in emps.values]
+            ancho[cols_sec].to_excel(writer, sheet_name=str(sector)[:31])
+
+    print(f"  ✓ Guardado: {ruta_salida}")
