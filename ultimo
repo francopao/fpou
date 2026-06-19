@@ -1,0 +1,827 @@
+# -*- coding: utf-8 -*-
+"""
+=============================================================================
+ EXTRACCION DE REMUNERACION DE DIRECTORIOS Y COMITES  ·  v2
+ (corregido tras evaluacion con actas reales: Engie y Volcan)
+=============================================================================
+
+Cambios clave respecto a v1 (motivados por los PDFs de prueba):
+
+ [1] PAGINAS DE EEFF: las actas incluyen Estados Financieros (Situacion,
+     Resultados, Flujos de Efectivo). Lineas como "Pagos a proveedores..."
+     generaban falsos positivos. -> Se detectan y se OMITEN esas paginas.
+
+ [2] KEYWORDS FUERTES vs DEBILES: "pago"/"compensacion" solo cuentan si hay
+     contexto de directorio/comite/sesion/dieta cerca. "dieta"/"retribucion"/
+     "remuneracion"/"honorario" disparan por si solas.
+
+ [3] EXTRACCION POR VENTANA (no por split de "."): se busca la keyword y se
+     toma una ventana de caracteres alrededor. Evita romper decimales
+     (S/ 1,200.50 ya no se parte en 1200 + 50).
+
+ [4] OCR conserva estructura de lineas (image_to_data por bloque/linea).
+
+ [5] FRECUENCIA tolerante: "por cada sesion", "por sesion presencial", etc.
+
+ [6] GUARDA DE CENTAVOS: ignora la notacion "00/100" deletreada.
+
+ [7] PRIORIDAD DE MONEDA: si en la ventana hay montos con S//US$, se
+     descartan los numeros sin moneda (matan el "100" de "00/100").
+
+ [8] EMPRESA: regex en mayuscula+minuscula terminada en S.A./S.A.A./S.A.C.,
+     desambiguada con el nombre del archivo. Capta "Engie Energia Peru S.A."
+     y "Volcan Compania Minera S.A.A.".
+
+ [9] AÑO: carpeta -> nombre de archivo -> fecha del propio acta.
+
+ [10] HOJA 'DIAGNOSTICO': lista TODOS los archivos procesados y si arrojaron
+      datos (asi sabes que Volcan se proceso y dio 0, sin inventar nada).
+
+Restricciones mantenidas: sin xlwings/win32com, openpyxl, comentarios en
+español, estructura por celdas '# %%', evidencia textual en cada fila.
+=============================================================================
+"""
+
+# %% ============================ IMPORTS ====================================
+import os
+import re
+import json
+import hashlib
+import logging
+import unicodedata
+from pathlib import Path
+from datetime import datetime
+from collections import Counter
+
+import numpy as np
+import pandas as pd
+
+from pdf2image import convert_from_path
+from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
+import pytesseract
+from PIL import Image
+
+try:
+    import cv2
+    _HAY_CV2 = True
+except Exception:
+    _HAY_CV2 = False
+
+from rapidfuzz import fuzz
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+
+# %% ========================== CONFIGURACION ================================
+
+RUTA_RAIZ = r"Z:\Mesa de Inversiones\Bottom-Up\0 Juntas de Accionistas\Actas"
+RUTA_SALIDA_EXCEL = os.path.join(
+    RUTA_RAIZ, f"Remuneraciones_Directorio_{datetime.now():%Y%m%d_%H%M}.xlsx"
+)
+RUTA_CACHE_OCR = os.path.join(RUTA_RAIZ, "_ocr_cache")
+
+TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+POPPLER_PATH = r"C:\poppler\Library\bin"   # None si poppler esta en el PATH
+
+OCR_IDIOMA = "spa"
+OCR_DPI = 300
+OCR_CONFIG = "--oem 1 --psm 6"
+UMBRAL_UPSCALE_PX = 1700
+
+CONFIANZA_FILA_REVISION = 70.0    # filas con confianza OCR < esto -> revisar
+UMBRAL_SIMILITUD_EMPRESA = 88     # token_set_ratio para fusionar empresas
+EMPRESA_DESDE = "auto"            # "auto" | "contenido" | "filename"
+
+# Ventana de caracteres alrededor de cada keyword (captura la frase completa
+# de la dieta, que suele ser larga).
+VENTANA_IZQ = 220
+VENTANA_DER = 340
+
+# --- Keywords FUERTES: disparan por si solas ---
+KW_FUERTE_STEMS = ["dieta", "retribuc", "remuneraci", "honorari", "emolument"]
+# --- Keywords DEBILES: solo si hay contexto de directorio/comite/sesion/dieta ---
+KW_DEBIL_STEMS = ["pago", "compensaci", "asignaci", "gratificaci"]
+# Regex unico de stems (se evalua sobre texto normalizado alineado)
+_RE_KW = re.compile("(" + "|".join(KW_FUERTE_STEMS + KW_DEBIL_STEMS) + ")")
+# Contexto requerido para aceptar una keyword debil
+_RE_CONTEXTO = re.compile(r"director|comite|sesion|dieta|retribuc|remuneraci")
+
+# --- Marcadores de pagina de Estados Financieros (para OMITIR) ---
+MARCADORES_EEFF = [
+    "estado de situacion financiera", "estado de resultados",
+    "estado de flujos de efectivo", "estado de cambios en el patrimonio",
+    "activo corriente", "pasivo corriente", "patrimonio neto",
+    "utilidad bruta", "utilidad operativa", "ingresos por ventas",
+    "costo de ventas", "flujo de efectivo y equivalentes",
+]
+
+# --- Clasificacion de Concepto (orden importa: 'dieta' primero) ---
+PATRONES_CONCEPTO = [
+    (r"\bdieta", "Dieta"),
+    (r"\bhonorari", "Honorarios"),
+    (r"\bemolument", "Emolumentos"),
+    (r"\bgratificaci", "Gratificacion"),
+    (r"\bcompensaci", "Compensacion"),
+    (r"\bretribuc", "Retribucion"),
+    (r"\bremuneraci", "Remuneracion"),
+    (r"por\s+(?:cada\s+)?(?:sesion|reunion|asistencia)", "Pago por sesion"),
+    (r"\bpago\b", "Pago"),
+]
+
+# --- Clasificacion de Frecuencia (tolerante a "por cada ...") ---
+PATRONES_FRECUENCIA = [
+    (r"por\s+(?:cada\s+)?sesion", "Por sesion"),
+    (r"por\s+(?:cada\s+)?reunion", "Por sesion"),
+    (r"por\s+(?:cada\s+)?asistencia", "Por sesion"),
+    (r"\bmensual", "Mensual"),
+    (r"al\s+mes\b", "Mensual"),
+    (r"\banual", "Anual"),
+    (r"al\s+a[nñ]o\b", "Anual"),
+    (r"\btrimestral", "Trimestral"),
+    (r"unica\s+vez", "Unica vez"),
+]
+
+SUFIJOS_SOCIETARIOS = [
+    "s.a.a.", "saa", "s.a.c.", "sac", "s.a.", "s a a", "s a c", "s a",
+    "s.r.l.", "srl", "e.i.r.l.", "eirl", "compania minera",
+    "sociedad anonima abierta", "sociedad anonima cerrada", "sociedad anonima",
+]
+
+# Tokens de relleno a quitar del inicio de un nombre de empresa capturado
+STOPWORDS_EMPRESA = {
+    "acta", "de", "del", "la", "el", "los", "junta", "obligatoria", "anual",
+    "accionistas", "no", "presencial", "general", "sociedad", "extraordinaria",
+    "y", "fijacion", "su", "designacion", "miembros", "directorio",
+}
+
+MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "setiembre": 9, "septiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+}
+
+
+# %% ========================= LOGGING / SETUP ===============================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("actas")
+
+if TESSERACT_CMD and os.path.exists(TESSERACT_CMD):
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+os.makedirs(RUTA_CACHE_OCR, exist_ok=True)
+
+
+# %% ===================== UTILIDADES DE TEXTO ===============================
+
+def quitar_acentos(texto: str) -> str:
+    """Minusculas sin tildes. Puede cambiar la longitud (no usar para indices)."""
+    if not texto:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
+def normalizar_alineado(texto: str) -> str:
+    """
+    Version sin acentos y en minusculas que PRESERVA la longitud (1 char por
+    char de entrada). Permite mapear indices del texto normalizado al original
+    para recortar la evidencia exacta.
+    """
+    salida = []
+    for ch in texto:
+        d = unicodedata.normalize("NFKD", ch)
+        base = "".join(c for c in d if not unicodedata.combining(c))
+        salida.append((base[:1] or ch).lower())
+    return "".join(salida)
+
+
+def es_pagina_eeff(texto: str) -> bool:
+    """True si la pagina parece un Estado Financiero (>=2 marcadores)."""
+    n = quitar_acentos(texto)
+    hits = sum(1 for m in MARCADORES_EEFF if m in n)
+    return hits >= 2
+
+
+# %% ===================== DETECCION ANIO / TRIMESTRE ========================
+
+_RE_ANIO = re.compile(r"\b(19|20)\d{2}\b")
+_RE_TRIM = [
+    re.compile(r"\b([1-4])\s*q\s*\d{0,4}\b", re.I),
+    re.compile(r"\bq\s*([1-4])\b", re.I),
+    re.compile(r"\b([1-4])\s*t\s*\d{0,4}\b", re.I),
+    re.compile(r"\bt\s*([1-4])\b", re.I),
+]
+_TRIM_TEXTO = {"primer": "1", "segundo": "2", "tercer": "3", "cuarto": "4"}
+_RE_FECHA_ACTA = re.compile(
+    r"(\d{1,2})\s+de\s+([a-zñ]+)\s+(?:de[l]?\s+)?(\d{4})", re.I
+)
+
+
+def detectar_anio_desde_ruta(ruta: str):
+    for parte in Path(ruta).parts[:-1]:  # solo carpetas, no el archivo
+        m = _RE_ANIO.search(parte)
+        if m:
+            anio = int(m.group(0))
+            if 1995 <= anio <= datetime.now().year + 1:
+                return anio
+    return None
+
+
+def detectar_anio_desde_filename(ruta: str):
+    m = _RE_ANIO.search(Path(ruta).name)
+    if m:
+        anio = int(m.group(0))
+        if 1995 <= anio <= datetime.now().year + 1:
+            return anio
+    return None
+
+
+def detectar_anio_desde_texto(paginas: list) -> int | None:
+    """Busca la fecha del acta (ej. '18 de marzo de 2022') en la 1ra pagina."""
+    if not paginas:
+        return None
+    texto = quitar_acentos(paginas[0]["texto"])
+    m = _RE_FECHA_ACTA.search(texto)
+    if m and m.group(2) in MESES:
+        anio = int(m.group(3))
+        if 1995 <= anio <= datetime.now().year + 1:
+            return anio
+    return None
+
+
+def detectar_trimestre_desde_ruta(ruta: str) -> str:
+    for parte in Path(ruta).parts[:-1]:
+        p = quitar_acentos(parte)
+        for rx in _RE_TRIM:
+            m = rx.search(p)
+            if m:
+                return f"{m.group(1)}Q"
+        for palabra, num in _TRIM_TEXTO.items():
+            if palabra in p and "trimestre" in p:
+                return f"{num}Q"
+    return "Sin trimestre"
+
+
+# %% ============================ OCR ========================================
+
+def _hash_archivo(ruta: str) -> str:
+    st = os.stat(ruta)
+    clave = f"{ruta}|{st.st_size}|{int(st.st_mtime)}"
+    return hashlib.md5(clave.encode("utf-8")).hexdigest()
+
+
+def _preprocesar_imagen(img_pil: Image.Image) -> Image.Image:
+    """Gris -> upscale si es pequeño -> umbral adaptativo -> deskew."""
+    if not _HAY_CV2:
+        return img_pil.convert("L")
+    img = np.array(img_pil.convert("L"))
+    h, w = img.shape[:2]
+    if w < UMBRAL_UPSCALE_PX:
+        img = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    img = cv2.bilateralFilter(img, 5, 50, 50)
+    img = cv2.adaptiveThreshold(
+        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15
+    )
+    try:
+        coords = np.column_stack(np.where(img < 128))
+        if len(coords) > 50:
+            ang = cv2.minAreaRect(coords)[-1]
+            ang = -(90 + ang) if ang < -45 else -ang
+            if abs(ang) > 0.5:
+                hh, ww = img.shape
+                M = cv2.getRotationMatrix2D((ww // 2, hh // 2), ang, 1.0)
+                img = cv2.warpAffine(img, M, (ww, hh), flags=cv2.INTER_CUBIC,
+                                     borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        pass
+    return Image.fromarray(img)
+
+
+def _texto_y_confianza(data: dict) -> tuple:
+    """
+    Reconstruye texto CON estructura de lineas a partir de image_to_data,
+    agrupando por (bloque, parrafo, linea). Devuelve (texto, confianza_media).
+    """
+    lineas = {}
+    confs = []
+    for i in range(len(data["text"])):
+        txt = data["text"][i]
+        if not txt or not txt.strip():
+            continue
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        lineas.setdefault(key, []).append(txt)
+        try:
+            c = float(data["conf"][i])
+            if c >= 0:
+                confs.append(c)
+        except Exception:
+            pass
+    texto = "\n".join(" ".join(lineas[k]) for k in sorted(lineas.keys()))
+    conf = float(np.mean(confs)) if confs else 0.0
+    return texto, round(conf, 1)
+
+
+def ocr_documento(ruta_pdf: str) -> list:
+    """OCR de un PDF con cache. Devuelve [{'pagina','texto','confianza'}, ...]."""
+    cache_path = os.path.join(RUTA_CACHE_OCR, f"{_hash_archivo(ruta_pdf)}.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    kwargs = {"dpi": OCR_DPI}
+    if POPPLER_PATH:
+        kwargs["poppler_path"] = POPPLER_PATH
+    imagenes = convert_from_path(ruta_pdf, **kwargs)
+
+    paginas = []
+    for i, img in enumerate(imagenes, start=1):
+        try:
+            data = pytesseract.image_to_data(
+                _preprocesar_imagen(img), lang=OCR_IDIOMA, config=OCR_CONFIG,
+                output_type=pytesseract.Output.DICT,
+            )
+            texto, conf = _texto_y_confianza(data)
+        except Exception as e:
+            log.warning("OCR fallo en pag %d de %s: %s", i, ruta_pdf, e)
+            texto, conf = "", 0.0
+        paginas.append({"pagina": i, "texto": texto, "confianza": conf})
+
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(paginas, f, ensure_ascii=False)
+    except Exception as e:
+        log.warning("No se pudo escribir cache OCR de %s: %s", ruta_pdf, e)
+    return paginas
+
+
+# %% ===================== PARSEO DE MONTOS ==================================
+
+_RE_MONTO = re.compile(
+    r"(?P<moneda>US\$|U\$S|S/\.?|\$|soles|d[oó]lares)?\s*"
+    r"(?P<num>\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)",
+    re.IGNORECASE,
+)
+
+
+def _parsear_numero(num_str: str):
+    s = re.sub(r"[^\d.,]", "", num_str)
+    if not s:
+        return None
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        partes = s.split(",")
+        s = s.replace(",", ".") if len(partes[-1]) == 2 else s.replace(",", "")
+    elif "." in s:
+        if s.count(".") > 1:
+            s = s.replace(".", "")
+        elif len(s.split(".")[-1]) == 3:
+            s = s.replace(".", "")
+    try:
+        val = float(s)
+        return val if val > 0 else None
+    except ValueError:
+        return None
+
+
+def _normalizar_moneda(tok) -> str:
+    if not tok:
+        return ""
+    t = quitar_acentos(tok)
+    if t.startswith("us") or t.startswith("u$") or "dolar" in t:
+        return "USD"
+    if t.startswith("s/") or "sol" in t:
+        return "PEN"
+    return ""
+
+
+def extraer_montos(texto: str) -> list:
+    """
+    Extrae montos plausibles de una ventana de texto.
+    - Ignora notacion de centavos '00/100'.
+    - Detecta moneda antes (US$/S/) o despues (soles/dolares) del numero.
+    - Si hay montos con moneda, descarta los numeros sin moneda (anti-ruido).
+    """
+    res = []
+    for m in _RE_MONTO.finditer(texto):
+        start, end = m.span("num")
+        despues = texto[end:end + 5]
+        antes = texto[max(0, start - 1):start]
+        if despues.startswith("/100") or antes == "/":   # guarda de centavos
+            continue
+        val = _parsear_numero(m.group("num"))
+        if val is None:
+            continue
+        moneda = _normalizar_moneda(m.group("moneda"))
+        if not moneda:
+            cola = quitar_acentos(texto[end:end + 14])
+            if "sol" in cola:
+                moneda = "PEN"
+            elif "dolar" in cola or "us$" in cola:
+                moneda = "USD"
+        if not moneda and 1900 <= val <= 2099 and float(val).is_integer():
+            continue   # probable anio suelto
+        if val < 10:
+            continue
+        res.append({"monto": val, "moneda": moneda, "tiene_moneda": bool(moneda)})
+
+    if any(r["tiene_moneda"] for r in res):
+        res = [r for r in res if r["tiene_moneda"]]
+    return res
+
+
+# %% ================ CLASIFICACION TIPO / CONCEPTO / FREC ===================
+
+def clasificar_tipo(ctx_norm: str) -> str:
+    if "comite" in ctx_norm:
+        return "Comite"
+    if "director" in ctx_norm:
+        return "Directorio"
+    return "Directorio"
+
+
+def clasificar_concepto(ctx_norm: str) -> str:
+    for patron, etiqueta in PATRONES_CONCEPTO:
+        if re.search(patron, ctx_norm):
+            return etiqueta
+    return "Remuneracion"
+
+
+def clasificar_frecuencia(ctx_norm: str) -> str:
+    for patron, etiqueta in PATRONES_FRECUENCIA:
+        if re.search(patron, ctx_norm):
+            return etiqueta
+    return "No especificada"
+
+
+# %% =================== EXTRACCION POR DOCUMENTO ============================
+
+def extraer_remuneraciones(paginas: list) -> tuple:
+    """
+    Devuelve (registros, n_paginas_eeff_omitidas).
+    Extraccion por VENTANA alrededor de cada keyword, omitiendo paginas EEFF.
+    Dedup con preferencia: ante misma (tipo,concepto,monto,pagina) se conserva
+    el registro mas informativo (con moneda y frecuencia conocida).
+    """
+    mejores = {}   # clave -> registro
+    eeff_omitidas = 0
+
+    def informatividad(r):
+        score = 0
+        if r["Moneda"]:
+            score += 2
+        if r["Frecuencia"] != "No especificada":
+            score += 1
+        if r["Concepto"] not in ("Remuneracion", "Pago"):
+            score += 1
+        return score
+
+    for pag in paginas:
+        texto = pag["texto"]
+        if not texto:
+            continue
+        if es_pagina_eeff(texto):
+            eeff_omitidas += 1
+            continue
+        conf = pag["confianza"]
+        norm = normalizar_alineado(texto)
+
+        for km in _RE_KW.finditer(norm):
+            stem = km.group(1)
+            i = km.start()
+            ini, fin = max(0, i - VENTANA_IZQ), min(len(texto), i + VENTANA_DER)
+            ventana = texto[ini:fin]
+            ventana_norm = norm[ini:fin]
+
+            es_fuerte = stem in KW_FUERTE_STEMS
+            if not es_fuerte and not _RE_CONTEXTO.search(ventana_norm):
+                continue   # keyword debil sin contexto -> se descarta
+
+            tipo = clasificar_tipo(ventana_norm)
+            concepto = clasificar_concepto(ventana_norm)
+            frecuencia = clasificar_frecuencia(ventana_norm)
+            evidencia = re.sub(r"\s+", " ", ventana).strip()[:300]
+            montos = extraer_montos(ventana)
+
+            if not montos:
+                clave = ("HALLAZGO", concepto, None, pag["pagina"])
+                reg = {
+                    "Tipo": tipo, "Concepto": concepto, "Monto": np.nan,
+                    "Moneda": "", "Frecuencia": frecuencia,
+                    "Pagina": pag["pagina"], "Confianza_OCR": conf,
+                    "Requiere_Revision": True, "Evidencia": evidencia,
+                }
+                if clave not in mejores:
+                    mejores[clave] = reg
+                continue
+
+            for mh in montos:
+                clave = (tipo, concepto, round(mh["monto"], 2), pag["pagina"])
+                reg = {
+                    "Tipo": tipo, "Concepto": concepto, "Monto": mh["monto"],
+                    "Moneda": mh["moneda"], "Frecuencia": frecuencia,
+                    "Pagina": pag["pagina"], "Confianza_OCR": conf,
+                    "Requiere_Revision": bool(
+                        conf < CONFIANZA_FILA_REVISION or not mh["tiene_moneda"]
+                    ),
+                    "Evidencia": evidencia,
+                }
+                if clave not in mejores or informatividad(reg) > informatividad(mejores[clave]):
+                    mejores[clave] = reg
+
+    return list(mejores.values()), eeff_omitidas
+
+
+# %% =================== NOMBRE DE EMPRESA ===================================
+
+# Empresa en mayuscula+minuscula terminada en sufijo societario.
+_RE_EMPRESA = re.compile(
+    r"([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ&.\-]*"
+    r"(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ&.\-]*){0,5}"
+    r"\s+S\.?\s?A\.?\s?[AC]?\.?)"
+)
+
+
+def _limpiar_filename(ruta_pdf: str) -> str:
+    s = Path(ruta_pdf).stem
+    s = re.sub(r"\b(acta|junta|jga|jgo|eg[mo]|sesion)\b", " ", s, flags=re.I)
+    s = re.sub(r"\d+", " ", s)                 # fechas / numeros
+    s = re.sub(r"[_\-]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _strip_stopwords(nombre: str) -> str:
+    toks = nombre.split()
+    while toks and quitar_acentos(toks[0]).strip(".") in STOPWORDS_EMPRESA:
+        toks.pop(0)
+    return " ".join(toks).strip()
+
+
+def inferir_empresa(paginas: list, ruta_pdf: str) -> str:
+    """Nombre crudo de la empresa: contenido del acta desambiguado por filename."""
+    fname = _limpiar_filename(ruta_pdf)
+    if EMPRESA_DESDE == "filename":
+        return fname or "DESCONOCIDA"
+
+    texto = "\n".join(p["texto"] for p in paginas[:2])
+    candidatos = set()
+    for m in _RE_EMPRESA.findall(texto):
+        c = _strip_stopwords(re.sub(r"\s+", " ", m).strip())
+        if len(c) >= 4:
+            candidatos.add(c)
+
+    if EMPRESA_DESDE == "contenido":
+        return (max(candidatos, key=len) if candidatos else fname) or "DESCONOCIDA"
+
+    # auto: si el filename coincide con algun candidato de contenido, usar ese
+    if candidatos and fname:
+        mejor = max(candidatos,
+                    key=lambda c: fuzz.partial_ratio(quitar_acentos(fname),
+                                                     quitar_acentos(c)))
+        if fuzz.partial_ratio(quitar_acentos(fname), quitar_acentos(mejor)) >= 70:
+            return mejor
+    if candidatos:
+        return max(candidatos, key=len)
+    return fname or "DESCONOCIDA"
+
+
+def canonicalizar_nombre(nombre: str) -> str:
+    n = quitar_acentos(nombre)
+    n = re.sub(r"[^a-z0-9 ]", " ", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    for suf in sorted(SUFIJOS_SOCIETARIOS, key=len, reverse=True):
+        s = quitar_acentos(suf)
+        if n.endswith(" " + s):
+            n = n[: -len(s)].strip()
+    return n.strip()
+
+
+def construir_clusters_empresa(nombres_crudos: list) -> dict:
+    unicos = list(dict.fromkeys(nombres_crudos))
+    claves = {raw: canonicalizar_nombre(raw) for raw in unicos}
+    clusters = []
+    for raw in unicos:
+        k = claves[raw]
+        if not k:
+            clusters.append([raw]); continue
+        colocado = False
+        for cl in clusters:
+            rep = claves[cl[0]]
+            if rep and fuzz.token_set_ratio(k, rep) >= UMBRAL_SIMILITUD_EMPRESA:
+                cl.append(raw); colocado = True; break
+        if not colocado:
+            clusters.append([raw])
+    frec = Counter(nombres_crudos)
+    mapa = {}
+    for cl in clusters:
+        display = max(cl, key=lambda r: (frec[r], len(r)))
+        display = re.sub(r"\s+", " ", display).strip().title()
+        for raw in cl:
+            mapa[raw] = display
+    return mapa
+
+
+# %% =================== ESCRITURA EXCEL =====================================
+
+COLUMNAS_HOJA = ["Tipo", "Concepto", "Monto", "Moneda", "Frecuencia", "Pagina",
+                 "RutaArchivo", "Anio", "Trimestre", "Confianza_OCR",
+                 "Requiere_Revision", "Evidencia"]
+COLUMNAS_RESUMEN = ["Empresa", "Concepto", "Monto", "Moneda", "Frecuencia",
+                    "Pagina", "Anio", "Trimestre"]
+COLUMNAS_DIAG = ["RutaArchivo", "Empresa", "Anio", "Trimestre", "Paginas",
+                 "Confianza_media", "Paginas_EEFF_omitidas", "Filas_extraidas",
+                 "Estado"]
+
+
+def _sanitizar_hoja(nombre: str, usados: set) -> str:
+    n = re.sub(r"[\[\]\:\*\?\/\\]", " ", nombre).strip()[:31] or "Empresa"
+    base, i = n, 1
+    while n.lower() in usados:
+        suf = f" ({i})"; n = base[: 31 - len(suf)] + suf; i += 1
+    usados.add(n.lower())
+    return n
+
+
+def _estilo_encabezado(ws, ncols):
+    fill = PatternFill("solid", fgColor="1F3864")
+    fuente = Font(bold=True, color="FFFFFF", size=10)
+    borde = Border(bottom=Side(style="thin", color="999999"))
+    for c in range(1, ncols + 1):
+        cel = ws.cell(row=1, column=c)
+        cel.fill = fill; cel.font = fuente; cel.border = borde
+        cel.alignment = Alignment(vertical="center", horizontal="center")
+    ws.freeze_panes = "A2"
+
+
+def _autoancho(ws, df, max_ancho=60):
+    for j, col in enumerate(df.columns, start=1):
+        largo = max([len(str(col))] +
+                    [len(str(v)) for v in df.iloc[:, j - 1].head(200)])
+        ws.column_dimensions[get_column_letter(j)].width = min(largo + 2, max_ancho)
+
+
+def _volcar_df(ws, df, columnas):
+    ws.append(columnas)
+    for _, fila in df[columnas].iterrows():
+        ws.append([("" if pd.isna(v) else v) for v in fila.tolist()])
+    _estilo_encabezado(ws, len(columnas))
+    _autoancho(ws, df[columnas])
+
+
+def escribir_excel(df: pd.DataFrame, df_diag: pd.DataFrame, ruta_salida: str):
+    wb = Workbook(); wb.remove(wb.active)
+
+    # RESUMEN (anio mas reciente con datos validos por Empresa+Concepto)
+    val = df[df["Monto"].notna() & (~df["Requiere_Revision"])].copy()
+    if val.empty:
+        val = df[df["Monto"].notna()].copy()
+    if not val.empty:
+        val["Anio"] = pd.to_numeric(val["Anio"], errors="coerce")
+        val = val.sort_values(["Empresa", "Concepto", "Anio"],
+                              ascending=[True, True, False])
+        resumen = val.drop_duplicates(subset=["Empresa", "Concepto"],
+                                      keep="first")[COLUMNAS_RESUMEN]
+    else:
+        resumen = pd.DataFrame(columns=COLUMNAS_RESUMEN)
+    _volcar_df(wb.create_sheet("RESUMEN"), resumen, COLUMNAS_RESUMEN)
+
+    # DIAGNOSTICO (todos los archivos, hayan dado datos o no)
+    _volcar_df(wb.create_sheet("DIAGNOSTICO"), df_diag, COLUMNAS_DIAG)
+
+    # Una hoja por empresa
+    usados = {"resumen", "diagnostico"}
+    rojo = PatternFill("solid", fgColor="FCE4E4")
+    for empresa, sub in df.groupby("Empresa", sort=True):
+        ws = wb.create_sheet(_sanitizar_hoja(str(empresa), usados))
+        _volcar_df(ws, sub, COLUMNAS_HOJA)
+        col_rev = COLUMNAS_HOJA.index("Requiere_Revision") + 1
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(row=r, column=col_rev).value in (True, "True", "VERDADERO"):
+                for c in range(1, len(COLUMNAS_HOJA) + 1):
+                    ws.cell(row=r, column=c).fill = rojo
+
+    wb.save(ruta_salida)
+    log.info("Excel generado: %s", ruta_salida)
+
+
+# %% =================== ORQUESTADOR PRINCIPAL ===============================
+
+def descubrir_pdfs(raiz: str) -> list:
+    rutas = []
+    for dirpath, _dirs, files in os.walk(raiz):
+        if "_ocr_cache" in dirpath:
+            continue
+        for f in files:
+            if f.lower().endswith(".pdf"):
+                rutas.append(os.path.join(dirpath, f))
+    return sorted(rutas)
+
+
+def procesar_todo(raiz: str = RUTA_RAIZ, ruta_excel: str = RUTA_SALIDA_EXCEL):
+    pdfs = descubrir_pdfs(raiz)
+    log.info("Encontrados %d PDFs bajo %s", len(pdfs), raiz)
+
+    filas, diag, errores = [], [], []
+
+    for n, ruta in enumerate(pdfs, start=1):
+        trimestre = detectar_trimestre_desde_ruta(ruta)
+        estado = "OK"
+        empresa_raw = _limpiar_filename(ruta) or "DESCONOCIDA"
+        n_pag = 0; conf_media = 0.0; eeff = 0; n_filas = 0
+
+        try:
+            paginas = ocr_documento(ruta)
+        except (PDFInfoNotInstalledError, PDFPageCountError) as e:
+            log.error("PDF ilegible / poppler ausente: %s | %s", ruta, e)
+            errores.append({"ruta": ruta, "error": f"OCR/poppler: {e}"})
+            estado = "ERROR_OCR"; paginas = []
+        except Exception as e:
+            log.error("Error OCR en %s | %s", ruta, e)
+            errores.append({"ruta": ruta, "error": f"OCR: {e}"})
+            estado = "ERROR_OCR"; paginas = []
+
+        # Anio: carpeta -> filename -> fecha del acta
+        anio = (detectar_anio_desde_ruta(ruta)
+                or detectar_anio_desde_filename(ruta)
+                or detectar_anio_desde_texto(paginas) or "")
+
+        if paginas and any(p["texto"] for p in paginas):
+            n_pag = len(paginas)
+            conf_media = round(float(np.mean([p["confianza"] for p in paginas])), 1)
+            try:
+                empresa_raw = inferir_empresa(paginas, ruta)
+            except Exception:
+                pass
+            try:
+                registros, eeff = extraer_remuneraciones(paginas)
+            except Exception as e:
+                log.error("Error de extraccion en %s | %s", ruta, e)
+                errores.append({"ruta": ruta, "error": f"Extraccion: {e}"})
+                registros = []; estado = "ERROR_EXTRACCION"
+            n_filas = len(registros)
+            if estado == "OK" and n_filas == 0:
+                estado = "SIN_REMUNERACION"
+            for r in registros:
+                r.update({"Empresa_raw": empresa_raw, "RutaArchivo": ruta,
+                          "Anio": anio, "Trimestre": trimestre})
+                filas.append(r)
+        elif estado == "OK":
+            estado = "OCR_VACIO"
+
+        log.info("[%d/%d] %s | %s | filas=%d eeff=%d",
+                 n, len(pdfs), os.path.basename(ruta), estado, n_filas, eeff)
+        diag.append({
+            "RutaArchivo": ruta, "Empresa": empresa_raw, "Anio": anio,
+            "Trimestre": trimestre, "Paginas": n_pag,
+            "Confianza_media": conf_media, "Paginas_EEFF_omitidas": eeff,
+            "Filas_extraidas": n_filas, "Estado": estado,
+        })
+
+    df_diag = pd.DataFrame(diag, columns=COLUMNAS_DIAG)
+
+    if not filas:
+        log.warning("No se extrajo ningun dato. Se genera Excel solo con DIAGNOSTICO.")
+        df = pd.DataFrame(columns=["Empresa"] + COLUMNAS_HOJA)
+    else:
+        df = pd.DataFrame(filas)
+        mapa = construir_clusters_empresa(df["Empresa_raw"].tolist())
+        df["Empresa"] = df["Empresa_raw"].map(mapa)
+        # mapear empresa canonica tambien en el diagnostico
+        df_diag["Empresa"] = df_diag["Empresa"].map(
+            lambda r: mapa.get(r, str(r).title())
+        )
+
+    escribir_excel(df, df_diag, ruta_excel)
+
+    if errores:
+        ruta_err = os.path.splitext(ruta_excel)[0] + "_ERRORES.csv"
+        pd.DataFrame(errores).to_csv(ruta_err, index=False, encoding="utf-8-sig")
+        log.info("Errores -> %s (%d archivos)", ruta_err, len(errores))
+
+    log.info("=" * 60)
+    log.info("Filas extraidas:        %d", len(df))
+    if not df.empty:
+        log.info("Empresas consolidadas:  %d", df["Empresa"].nunique())
+        log.info("Filas a revisar:        %d", int(df["Requiere_Revision"].sum()))
+    log.info("Archivos sin remun.:    %d", int((df_diag["Estado"] == "SIN_REMUNERACION").sum()))
+    log.info("Archivos con error:     %d", len(errores))
+    log.info("=" * 60)
+    return df, df_diag
+
+
+# %% ============================ EJECUCION ==================================
+
+if __name__ == "__main__":
+    df_resultado, df_diagnostico = procesar_todo()
