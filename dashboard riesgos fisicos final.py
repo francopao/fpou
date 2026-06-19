@@ -1,4 +1,6 @@
 
+
+
 # -*- coding: utf-8 -*-
 """
 ================================================================================
@@ -3402,6 +3404,51 @@ def main():
                 emp_sector=emp_sector, exp_clase=exp_clase, aum_cartera=aum_cartera,
                 enfen=enfen, fen_chart=fen_chart)
     log(f"HTML generado  : {html_out}")
+    
+    
+    # ====== EXTENSIÓN RF — PÉRDIDA ESPERADA (módulo aparte, 100% aditivo) ======
+    try:
+        import rf_extension as rfx
+        try:
+            _enfen_path = find_file(ENFEN_DIR, ENFEN_PATTERNS, "ENFEN (extensión RF)")
+        except SystemExit:
+            _enfen_path = None
+        try:
+            _indic_path = find_file(FEN_IND_DIR, CLIMA_PATTERNS, "Indicadores (extensión RF)")
+        except SystemExit:
+            _indic_path = None
+        rfx.generar_extension(
+            out_dir=OUT_DIR, districts=districts, exp_clase=exp_clase,
+            emp_sector=emp_sector, risk_path=risk_path, sheet_val=sheet_val,
+            equiv_canonico=_equiv_exposicion_all(),
+            enfen_path=_enfen_path, indic_path=_indic_path,
+            stamp=stamp, logfn=lambda m: log(m))
+    except Exception as e:
+        log(f"No se pudo generar la extensión RF (el dashboard original no se afecta): {e}", "WARN")
+        
+    # ====== EXTENSIÓN ACTIVOS FÍSICOS — DASHBOARD LEAFLET (módulo aparte, 100% aditivo) ======
+    try:
+        import activos_extension3 as actx
+        actx.generar_dashboard_activos(
+            out_dir=OUT_DIR,
+            districts=districts,
+            exp_clase=exp_clase,
+            aum_cartera=aum_cartera,
+            emp_sector=emp_sector,
+            risk_path=risk_path,
+            geojson=geojson,
+            enfen=enfen,
+            stamp=stamp,
+            mitigantes_path=r"C:\Users\usuario\OneDrive\Desktop\AFP INTEGRA\ESG\Riesgos Fisicos\2026\Inputs\Mitigantes.xlsx",
+            logfn=lambda m: log(m))
+    except Exception as e:
+        log(f"No se pudo generar el dashboard de activos (el dashboard original no se afecta): {e}", "WARN")
+    
+    
+            
+        
+        
+        
 
     log("=" * 60)
     log("PROCESO COMPLETADO")
