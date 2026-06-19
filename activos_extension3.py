@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 ================================================================================
@@ -260,6 +259,56 @@ def _sector_icono(sector):
     return SECTOR_ICONO.get(sector, "circulo")
 
 
+def leer_mitigantes(path, logfn=print):
+    """Lee la hoja del semestre actual del archivo Mitigantes.xlsx. Detecta el sheet
+    segun el mes (<=6 -> 1S, >6 -> 2S) y arma 'XSyy' (ej '1S26'); si no existe usa el
+    semestre anterior. Devuelve {empresa: 'Bajo'|'Medio'|'Alto'} a partir del valor
+    numerico 1/2/3 (data_only resuelve formulas; valor directo se trata igual)."""
+    MAPA_LABEL = {1: 'Bajo', 2: 'Medio', 3: 'Alto'}
+    resultado = {}
+    if not path or not os.path.exists(path):
+        logfn(f"[Activos] Mitigantes: archivo no encontrado ({path}). Se usara '-'.")
+        return resultado
+    try:
+        import openpyxl
+        from datetime import datetime
+        hoy = datetime.now()
+        anio2 = str(hoy.year)[-2:]
+        sem = '1' if hoy.month <= 6 else '2'
+        candidatos = [f"{sem}S{anio2}"]
+        if sem == '1':
+            candidatos.append(f"2S{str(hoy.year - 1)[-2:]}")
+        else:
+            candidatos.append(f"1S{anio2}")
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        hoja_usar = None
+        for c in candidatos:
+            if c in wb.sheetnames:
+                hoja_usar = c
+                break
+        if hoja_usar is None:
+            logfn(f"[Activos] Mitigantes: no se encontro hoja para {candidatos}. "
+                  f"Hojas disponibles: {wb.sheetnames}")
+            wb.close()
+            return resultado
+        ws = wb[hoja_usar]
+        logfn(f"[Activos] Mitigantes: usando hoja '{hoja_usar}'.")
+        for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
+            empresa, val = (row[0], row[1]) if len(row) >= 2 else (None, None)
+            if not empresa:
+                continue
+            try:
+                num = int(round(float(val)))
+                label = MAPA_LABEL.get(num, '\u2014')
+            except (TypeError, ValueError):
+                label = '\u2014'
+            resultado[str(empresa).strip()] = label
+        wb.close()
+    except Exception as e:
+        logfn(f"[Activos] Error leyendo Mitigantes ({e}). Se usara '-'.")
+    return resultado
+
+
 def _color_nino(enfen):
     """Color/opacidad/etiqueta del rectángulo Región Niño 1+2 según el ÚLTIMO
     registro ENFEN cuyo estado no sea 'NO ACTIVO' / 'NO IDENTIFICADO'. Recibe la
@@ -302,12 +351,14 @@ def _color_nino(enfen):
 
 def generar_dashboard_activos(out_dir, districts, exp_clase, aum_cartera,
                               emp_sector, risk_path, geojson,
-                              enfen=None, stamp=None, logfn=print):
+                              enfen=None, mitigantes_path=None,
+                              stamp=None, logfn=print):
     """Punto de entrada público (espejo de rf_extension.generar_extension)."""
     if stamp is None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M")
 
     fx = leer_tipo_cambio(risk_path, logfn=logfn)
+    mitigantes = leer_mitigantes(mitigantes_path, logfn=logfn)
     centroids, bbox_dist, bbox_prov, bbox_dep = calcular_geometria(geojson)
 
     # sectores presentes -> icono/color
@@ -331,6 +382,7 @@ def generar_dashboard_activos(out_dir, districts, exp_clase, aum_cartera,
         "sector_icono": sector_icono,
         "sector_color": sector_color,
         "nino": _color_nino(enfen),
+        "mitigantes": mitigantes,
         "afp": {"azul": AFP_AZUL, "cyan": AFP_CYAN, "amar": AFP_AMAR,
                 "gris": AFP_GRIS, "plomo": AFP_PLOMO},
     }
@@ -417,6 +469,22 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
    vertical-align:middle;width:34px;}
  .r5{background:#c0392b;} .r4{background:#e67e22;}
  .r3{background:#f1c40f;color:#5a4500 !important;}
+ /* --- ADICIONES (capa resumen/detalle, dos columnas, scores) --- */
+ .r1{background:#27ae60;color:#fff;}
+ .r2{background:#2ecc71;color:#fff;}
+ .lyrbtn{border:1px solid var(--azul);background:#fff;color:var(--azul);
+   border-radius:7px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;}
+ .lyrbtn:hover{background:var(--azul);color:#fff;}
+ .lyrbar{display:flex;margin-top:6px;}
+ .capa1 table.piv td.emis-line{white-space:normal;word-break:break-word;line-height:1.5;}
+ .dos-cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px;}
+ @media(max-width:900px){.dos-cols{grid-template-columns:1fr;}}
+ .dos-cols .blk{height:100%;}
+ .scorectrls{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;margin-bottom:10px;}
+ .scorectrls label{font-size:11px;color:var(--plomo);display:flex;flex-direction:column;gap:3px;}
+ .scorectrls select{font-size:11.5px;border:1px solid var(--linea);border-radius:6px;padding:3px;}
+ .emp-h4{margin:10px 0 3px;font-size:13px;color:var(--azul);text-align:left;}
+ td.sc-cell{text-align:center;font-weight:700;}
  table.piv td.aumtot{background:#eef3ff;vertical-align:middle;font-weight:700;
    color:var(--azul);text-align:right;white-space:nowrap;}
  table.piv td.num{text-align:right;white-space:nowrap;}
@@ -482,6 +550,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="wrap">
   <div class="grid3" id="bloques"></div>
+  <div class="dos-cols" id="secScores"></div>
   <details class="metod">
     <summary>Metodología y supuestos</summary>
     <p>Cada bloque corresponde a un peligro CENEPRED y agrupa a los emisores por el
@@ -513,6 +582,7 @@ const D = PAYLOAD.districts;
 const EXP_CLASE = PAYLOAD.exp_clase || {};
 const AUM = PAYLOAD.aum_cartera || {TODOS:0,'RENTA VARIABLE':0,'RENTA FIJA':0};
 const EMP_SECTOR = PAYLOAD.emp_sector || {};
+const MITIGANTES = PAYLOAD.mitigantes || {};
 const NIV = PAYLOAD.niveles_altos || [5,4,3];
 const FX = PAYLOAD.fx || {valor:3.5, fuente:'default'};
 const CENTROID = PAYLOAD.centroids || {};
@@ -598,6 +668,27 @@ function buildTablaHTML(hz){
         dep:d.dep,prov:d.prov,dist:d.dist}));
     });
   });
+  // ---- Capa 1 (Vista Resumen): 5 niveles, emisores por nivel en una línea ----
+  const bucketAll={}; [1,2,3,4,5].forEach(L=>bucketAll[L]={});
+  D.forEach(d=>{
+    const L=d[col];
+    if([1,2,3,4,5].indexOf(L)<0) return;
+    (d.ap||[]).forEach(a=>{
+      const m=a.m*classFrac(a.e); if(m<=0) return;
+      bucketAll[L][a.e]=(bucketAll[L][a.e]||0)+m;
+    });
+  });
+  let resH='<thead><tr><th>Riesgo</th><th>AUM Total</th><th>Emisor</th></tr></thead><tbody>';
+  [5,4,3,2,1].forEach(L=>{
+    const ems=Object.entries(bucketAll[L]).sort((a,b)=>b[1]-a[1]);
+    const aumL=ems.reduce((s,e)=>s+e[1],0);
+    const lista=ems.map(e=>e[0]).join(', ') || '—';
+    resH+='<tr><td class="riesgo r'+L+'">'+L+'</td>'+
+          '<td class="aumtot"><span class="pct">'+fmtP(aumL/denom)+
+          '</span><span class="monto">'+fmtMonto(aumL)+'</span></td>'+
+          '<td class="emis-line">'+lista+'</td></tr>';
+  });
+  resH+='</tbody>';
   // filas
   let rows=[];
   NIV.forEach(L=>{
@@ -625,7 +716,7 @@ function buildTablaHTML(hz){
   if(!rows.length){
     h+='<tr><td colspan="5" style="padding:14px;color:var(--plomo)">'+
        'Sin emisores con score '+NIV.join('–')+' para este filtro.</td></tr></tbody>';
-    return h;
+    return armarCapas(resH, h, hz.key);
   }
   const cnt={}, first={};
   rows.forEach((r,i)=>{cnt[r.nivel]=(cnt[r.nivel]||0)+1; if(first[r.nivel]===undefined)first[r.nivel]=i;});
@@ -655,7 +746,34 @@ function buildTablaHTML(hz){
     h+='</tr>';
   });
   h+='</tbody>';
-  return h;
+  return armarCapas(resH, h, hz.key);
+}
+
+// Envuelve las dos capas (Resumen / Detalle) y sus botones de transición.
+// Mantiene id="piv_{hz}" en la tabla de detalle para que redibujarTablas la ubique.
+const LAYER_STATE={};
+function armarCapas(resInner, detInner, hzkey){
+  return ''+
+   '<div class="capa1" id="capa1_'+hzkey+'">'+
+     '<table class="piv" style="width:100%">'+resInner+'</table>'+
+     '<div class="lyrbar" style="justify-content:flex-end">'+
+       '<button class="lyrbtn" onclick="setLayer(\''+hzkey+'\',\'detalle\')">Ver detalle →</button>'+
+     '</div></div>'+
+   '<div class="capa2" id="capa2_'+hzkey+'" style="display:none">'+
+     '<div style="max-height:340px;overflow:auto;border:1px solid var(--linea);border-radius:8px">'+
+       '<table class="piv" id="piv_'+hzkey+'">'+detInner+'</table>'+
+     '</div>'+
+     '<div class="lyrbar" style="justify-content:flex-start">'+
+       '<button class="lyrbtn" onclick="setLayer(\''+hzkey+'\',\'resumen\')">← Vista resumen</button>'+
+     '</div></div>';
+}
+function setLayer(hzkey, modo){
+  LAYER_STATE[hzkey]=modo;
+  const c1=document.getElementById('capa1_'+hzkey);
+  const c2=document.getElementById('capa2_'+hzkey);
+  if(!c1||!c2) return;
+  c1.style.display = (modo==='detalle')?'none':'';
+  c2.style.display = (modo==='detalle')?'':'none';
 }
 
 // ======================================================================
@@ -716,6 +834,7 @@ class MapaPeligro{
   constructor(hz, el){
     this.hz=hz; this.col=hz.col;
     this.level='pais'; this.dep=null; this.prov=null; this.dist=null;
+    this.filtroEmisor=null; this.filtroSector=null;   // ADICIÓN 2 (filtros del mapa)
     this.map=L.map(el,{preferCanvas:true, zoomControl:true, attributionControl:false,
                        minZoom:4, maxZoom:13});
     this.map.fitBounds(PERU_BOUNDS);
@@ -725,14 +844,34 @@ class MapaPeligro{
     // en color tierra para que el celeste solo cubra el mar. Se crea una sola vez
     // al arrancar y NO se retoca en los re-renders del drill-down.
     this.map.createPane('vecinos'); this.map.getPane('vecinos').style.zIndex=360;
-    cargarVecinos().then(data=>{ if(data) L.geoJSON(data,{pane:'vecinos',
-      interactive:false, style:{fillColor:'#e8e0d0',fillOpacity:0.95,
-        color:'#c9bfaf',weight:0.6}}).addTo(this.map); });
+    cargarVecinos().then(data=>{ if(!data) return;
+      L.geoJSON(data,{pane:'vecinos',
+        interactive:false, style:{fillColor:'#e8e0d0',fillOpacity:0.95,
+          color:'#c9bfaf',weight:0.6}}).addTo(this.map);
+      // ADICIÓN 3: nombre de cada país vecino en el centroide aproximado
+      // (promedio de coordenadas del primer anillo exterior)
+      data.features.forEach(f=>{
+        const g=f.geometry; if(!g) return;
+        const ring = g.type==='Polygon' ? g.coordinates[0]
+                   : (g.coordinates[0] && g.coordinates[0][0]);
+        if(!ring || !ring.length) return;
+        let sx=0, sy=0; ring.forEach(pt=>{ sx+=pt[0]; sy+=pt[1]; });
+        const lng=sx/ring.length, lat=sy/ring.length;
+        L.marker([lat,lng],{interactive:false, icon:L.divIcon({className:'',
+          html:'<div style="font-size:10px;color:#8a7f72;font-weight:600;'+
+               'white-space:nowrap;pointer-events:none">'+(f.properties.ADMIN||'')+'</div>',
+          iconSize:[90,14], iconAnchor:[45,7]})}).addTo(this.map);
+      });
+    });
     // rectángulo Región Niño 1+2 (color/opacidad dinámicos según último ENFEN)
     const rectNino=L.rectangle(NINO_RECT,{pane:'oceano',color:NINO.color,weight:0,
       fillColor:NINO.color,fillOpacity:NINO.opacity,interactive:true}).addTo(this.map);
-    rectNino.bindTooltip('Región Niño 1+2 · '+NINO.label,
-      {permanent:true, direction:'top', className:'tt'});
+    // ADICIÓN 3: etiqueta permanente movida a mar abierto, fuera del área de Perú
+    L.marker([-2.5,-87.5],{interactive:false, icon:L.divIcon({className:'',
+      html:'<div style="font-size:11px;color:'+NINO.color+';font-weight:700;'+
+           'white-space:nowrap;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff">'+
+           'Región Niño 1+2 · '+NINO.label+'</div>',
+      iconSize:[170,16], iconAnchor:[85,8]})}).addTo(this.map);
     // tooltip flotante en hover: estado + fecha del registro ENFEN usado
     const ttHover=L.tooltip({direction:'top', className:'tt', sticky:true});
     rectNino.on('mouseover', e=>{
@@ -764,8 +903,10 @@ class MapaPeligro{
       style:f=>{
         const d=byU[f.properties.IDDIST];
         const sc=d? d[self.col] : null;
-        return {color:'#ffffff', weight:0.5, fillColor:scoreColor(sc),
-                fillOpacity:(sc?0.9:0.55)};
+        const noScore=(sc===null||sc===undefined);
+        return {color:'#000000', weight: self.level==='pais' ? 0.15 : 0.7,
+                fillColor: noScore?'#ffffff':scoreColor(sc),
+                fillOpacity: noScore?0.85:0.9};
       },
       onEachFeature:(f,layer)=>{
         const p=f.properties; const d=byU[p.IDDIST];
@@ -782,11 +923,11 @@ class MapaPeligro{
         layer.bindTooltip(tip,{className:'tt',sticky:true});
         layer.on('click',()=>self.onClickDistrito(p));
         layer.on('mouseover',()=>layer.setStyle({weight:1.6,color:AFP.cyan}));
-        layer.on('mouseout',()=>layer.setStyle({weight:0.5,color:'#fff'}));
+        layer.on('mouseout',()=>layer.setStyle({weight:0.7,color:'#000'}));
       }
     }).addTo(this.map);
     // activos (solo desde capa departamental hacia abajo)
-    if(this.level!=='pais') this.dibujarActivos(feats);
+    if(this.level!=='pais' || this.filtroEmisor || this.filtroSector) this.dibujarActivos(feats);
     // encuadre
     if(this.level==='pais'){ this.map.fitBounds(PERU_BOUNDS); }
     else {
@@ -808,23 +949,32 @@ class MapaPeligro{
     visU.forEach(u=>{
       const d=byU[u]; if(!d) return;
       let acts=activosDeDistrito(d);
+      // ADICIÓN 2: filtros independientes y acumulables (emisor / sector)
+      if(self.filtroEmisor) acts=acts.filter(a=>a.emisor===self.filtroEmisor);
+      if(self.filtroSector) acts=acts.filter(a=>a.sector===self.filtroSector);
       if(!acts.length) return;
       const c=CENTROID[u]; if(!c) return;
       acts.sort((a,b)=>b.plata-a.plata);
-      const MAXN = self.level==='dist'? 12 : 6;   // límite anti-aglomeración
+      const MAXN = self.level==='dist'? 12 : self.level==='prov'? 4 : self.level==='dep'? 2 : 1;
       const extra = acts.length>MAXN ? acts.length-MAXN : 0;
       const muestra = acts.slice(0,MAXN);
       const maxPlata = Math.max.apply(null, acts.map(a=>a.plata)) || 1;
       // radio de dispersión según capa (más separación al acercar)
-      const baseR = self.level==='dist'? 0.012 : (self.level==='prov'? 0.02 : 0.05);
+      const baseR = self.level==='dist'? 0.012 : self.level==='prov'? 0.02 : 0.05;
       muestra.forEach((a,i)=>{
         const ang = (i/Math.max(1,muestra.length))*2*Math.PI;
         const rr = muestra.length>1 ? baseR*(0.4+0.6*(i%3)) : 0;
         const lat=c[0]+rr*Math.sin(ang), lng=c[1]+rr*Math.cos(ang);
         const tipo=SEC_ICONO[a.sector]||'circulo';
         const color=SEC_COLOR[a.sector]||'#555';
-        // tamaño proporcional a sqrt(plata)
-        const px=Math.max(14, Math.min(46, 14+30*Math.sqrt(a.plata/maxPlata)));
+        // tamaño proporcional a sqrt(plata), con tope según capa
+        const px = self.level==='pais'
+          ? Math.max(6,  Math.min(12,  6 +  6*Math.sqrt(a.plata/maxPlata)))
+          : self.level==='dep'
+          ? Math.max(8,  Math.min(18,  8 + 10*Math.sqrt(a.plata/maxPlata)))
+          : self.level==='prov'
+          ? Math.max(10, Math.min(26, 10 + 16*Math.sqrt(a.plata/maxPlata)))
+          : Math.max(14, Math.min(46, 14 + 30*Math.sqrt(a.plata/maxPlata)));
         const ic=L.divIcon({className:'act-ic', html:iconSVG(tipo,color,px),
           iconSize:[px,px], iconAnchor:[px/2,px/2]});
         const tip='<b>'+a.activo+'</b><br>'+a.emisor+' · '+(a.sector||'')+
@@ -886,6 +1036,17 @@ class MapaPeligro{
     }
     selProv.value=this.prov||'';
     selProv.disabled = !this.dep;
+    // ADICIÓN 2: selects de emisor y sector (creados en poblarDropdowns)
+    const selEmisor=document.getElementById('selEmisor_'+this.hz.key);
+    const selSector=document.getElementById('selSector_'+this.hz.key);
+    if(selEmisor){
+      selEmisor.value=this.filtroEmisor||'';
+      selEmisor.onchange=()=>{ this.filtroEmisor=selEmisor.value||null; this.render(); };
+    }
+    if(selSector){
+      selSector.value=this.filtroSector||'';
+      selSector.onchange=()=>{ this.filtroSector=selSector.value||null; this.render(); };
+    }
   }
 }
 
@@ -922,6 +1083,9 @@ function construirBloques(){
 
 function poblarDropdowns(){
   const deps=Object.keys(PROV_DE_DEP).sort();
+  // ADICIÓN 2: universos de emisores (presentes en D) y sectores (de EMP_SECTOR)
+  const emisores=[...new Set(D.flatMap(d=>(d.ap||[]).map(a=>a.e)).filter(Boolean))].sort();
+  const sectores=[...new Set(Object.values(EMP_SECTOR).filter(Boolean))].sort();
   HZ.forEach(hz=>{
     const selDep=document.getElementById('selDep_'+hz.key);
     selDep.innerHTML='<option value="">(departamento)</option>';
@@ -933,15 +1097,160 @@ function poblarDropdowns(){
     const selProv=document.getElementById('selProv_'+hz.key);
     selProv.onchange=()=>{ const v=selProv.value;
       if(v) m.goTo('prov', m.dep, v); else if(m.dep) m.goTo('dep', m.dep); };
+    // ADICIÓN 2: selects de emisor y sector a la derecha del mapbar
+    const mapbar=selProv.closest('.mapbar');
+    const selEmisor=document.createElement('select');
+    selEmisor.id='selEmisor_'+hz.key; selEmisor.title='Filtrar por emisor';
+    selEmisor.innerHTML='<option value="">(todos los emisores)</option>'+
+      emisores.map(e=>'<option value="'+e.replace(/"/g,'&quot;')+'">'+e+'</option>').join('');
+    const selSector=document.createElement('select');
+    selSector.id='selSector_'+hz.key; selSector.title='Filtrar por sector';
+    selSector.innerHTML='<option value="">(todos los sectores)</option>'+
+      sectores.map(s=>'<option value="'+s.replace(/"/g,'&quot;')+'">'+s+'</option>').join('');
+    mapbar.appendChild(selEmisor); mapbar.appendChild(selSector);
+    selEmisor.onchange=()=>{ m.filtroEmisor=selEmisor.value||null; m.render(); };
+    selSector.onchange=()=>{ m.filtroSector=selSector.value||null; m.render(); };
   });
 }
 
 function redibujarTablas(){
   HZ.forEach(hz=>{
-    document.getElementById('piv_'+hz.key).innerHTML=buildTablaHTML(hz);
+    const tbl=document.getElementById('piv_'+hz.key);
+    const wrap=tbl.closest('.pivwrap');
+    // cada capa gestiona su propio scroll interno -> neutralizamos el recorte
+    // del contenedor para que la Capa 1 (resumen) se muestre completa.
+    wrap.style.maxHeight='none'; wrap.style.overflow='visible';
+    wrap.innerHTML=buildTablaHTML(hz);
+    setLayer(hz.key, LAYER_STATE[hz.key]||'resumen');
   });
+  if(typeof buildScoreEmpresa==='function') buildScoreEmpresa();
+  if(typeof buildScoreSector==='function') buildScoreSector();
 }
 function redibujarMapas(){ MAPAS.forEach(m=>m.render()); }
+
+// ======================================================================
+//  ADICIÓN 4 — Scores ponderados por empresa y por sector
+// ======================================================================
+// calcScores(): score CENEPRED por emisor y peligro, ponderado por la plata del
+// emisor en cada distrito (clase activa via classFrac). NOTA: distritos sin score
+// para un peligro (frecuente en Sequías) cuentan 0 en el numerador con denominador
+// = plata total del emisor (fórmula literal solicitada); esto deprime el score
+// cuando el emisor tiene plata en zonas sin dato. Compartida por ambas columnas.
+function calcScores(){
+  const tot={}, perDist={};
+  D.forEach(d=>{
+    const acc={};
+    (d.ap||[]).forEach(a=>{ const m=a.m*classFrac(a.e); if(m>0) acc[a.e]=(acc[a.e]||0)+m; });
+    Object.entries(acc).forEach(([e,m])=>{
+      tot[e]=(tot[e]||0)+m;
+      (perDist[e]=perDist[e]||[]).push({mm:d.smm,inu:d.sinu,seq:d.sseq,plata:m});
+    });
+  });
+  const out={};
+  Object.keys(tot).forEach(e=>{
+    const T=tot[e]||1; const ac={mm:0,inu:0,seq:0};
+    perDist[e].forEach(x=>{ const f=x.plata/T;
+      ac.mm += f*((typeof x.mm==='number')?x.mm:0);
+      ac.inu+= f*((typeof x.inu==='number')?x.inu:0);
+      ac.seq+= f*((typeof x.seq==='number')?x.seq:0);
+    });
+    const g=(ac.mm+ac.inu+ac.seq)/3;
+    out[e]={mm:+ac.mm.toFixed(2), inu:+ac.inu.toFixed(2), seq:+ac.seq.toFixed(2),
+            global:+g.toFixed(2)};
+  });
+  return out;
+}
+function scoreBg(v){
+  if(v<2) return '#d4edda';
+  if(v<3) return '#fff3cd';
+  if(v<=4) return '#ffe0b2';
+  return '#f8d7da';
+}
+function scCell(v){ return '<td class="sc-cell" style="background:'+scoreBg(v)+'">'+v.toFixed(2)+'</td>'; }
+
+// CAMBIO 3: Mitigantes con lookup tolerante (sin acentos / sin mayúsculas) y color
+function getMitigante(emisor){
+  if(MITIGANTES[emisor]) return MITIGANTES[emisor];
+  const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  const ne = norm(emisor);
+  const found = Object.keys(MITIGANTES).find(k => norm(k) === ne);
+  return found ? MITIGANTES[found] : '—';
+}
+function mitiCell(emisor){
+  const v = getMitigante(emisor);
+  const bg = v==='Bajo'?'#d4edda' : v==='Medio'?'#fff3cd' : v==='Alto'?'#f8d7da' : '';
+  return '<td style="text-align:center'+(bg?(';background:'+bg):'')+'">'+v+'</td>';
+}
+
+// estado de filtros (persistente entre re-render por pestaña/moneda)
+let EMP_SEC_SEL=[], EMP_NOM_SEL=[], SECTOR_SEL=null;
+
+function buildScoreEmpresa(){
+  let col=document.getElementById('colEmpresa');
+  if(!col){ col=document.createElement('div'); col.className='blk'; col.id='colEmpresa';
+    document.getElementById('secScores').appendChild(col); }
+  const scores=calcScores();
+  const emisores=Object.keys(scores).sort();
+  const sectores=[...new Set(Object.values(EMP_SECTOR).filter(Boolean))].sort();
+  const optSec=sectores.map(s=>'<option value="'+s.replace(/"/g,'&quot;')+'"'+
+    (EMP_SEC_SEL.indexOf(s)>=0?' selected':'')+'>'+s+'</option>').join('');
+  const optNom=emisores.map(e=>'<option value="'+e.replace(/"/g,'&quot;')+'"'+
+    (EMP_NOM_SEL.indexOf(e)>=0?' selected':'')+'>'+e+'</option>').join('');
+  // emisores a mostrar: todos si no hay filtro; si no, unión sector∪empresa
+  let mostrar;
+  if(EMP_SEC_SEL.length===0 && EMP_NOM_SEL.length===0){ mostrar=emisores; }
+  else {
+    const set=new Set(EMP_NOM_SEL);
+    emisores.forEach(e=>{ if(EMP_SEC_SEL.indexOf(EMP_SECTOR[e])>=0) set.add(e); });
+    mostrar=emisores.filter(e=>set.has(e));
+  }
+  let tablas=mostrar.map(e=>{
+    const s=scores[e];
+    return '<h4 class="emp-h4">'+e+'</h4>'+
+      '<table class="piv"><thead><tr><th>Movimientos de Masa</th><th>Inundación</th>'+
+      '<th>Sequías Severas</th><th>Score Global</th><th>Mitigantes</th></tr></thead>'+
+      '<tbody><tr>'+scCell(s.mm)+scCell(s.inu)+scCell(s.seq)+scCell(s.global)+
+      mitiCell(e)+'</tr></tbody></table>';
+  }).join('');
+  if(!mostrar.length) tablas='<p style="color:var(--plomo);font-size:12px">Sin emisores.</p>';
+  col.innerHTML=
+    '<h3><span class="dot" style="background:var(--azul)"></span>Score por empresa</h3>'+
+    '<div class="scorectrls">'+
+      '<label>Sector<select multiple size="5" id="filtEmpSec">'+optSec+'</select></label>'+
+      '<label>Empresa<select multiple size="5" id="filtEmpNom">'+optNom+'</select></label>'+
+      '<button class="lyrbtn" id="btnLimpEmp" style="align-self:center">Limpiar filtros</button>'+
+    '</div>'+tablas;
+  document.getElementById('filtEmpSec').onchange=ev=>{
+    EMP_SEC_SEL=[...ev.target.selectedOptions].map(o=>o.value); buildScoreEmpresa(); };
+  document.getElementById('filtEmpNom').onchange=ev=>{
+    EMP_NOM_SEL=[...ev.target.selectedOptions].map(o=>o.value); buildScoreEmpresa(); };
+  document.getElementById('btnLimpEmp').onclick=()=>{
+    EMP_SEC_SEL=[]; EMP_NOM_SEL=[]; buildScoreEmpresa(); };
+}
+
+function buildScoreSector(){
+  let col=document.getElementById('colSector');
+  if(!col){ col=document.createElement('div'); col.className='blk'; col.id='colSector';
+    document.getElementById('secScores').appendChild(col); }
+  const scores=calcScores();
+  const emisores=Object.keys(scores);
+  const sectores=[...new Set(Object.values(EMP_SECTOR).filter(Boolean))].sort();
+  if(SECTOR_SEL===null) SECTOR_SEL=sectores[0]||'';
+  const opt=sectores.map(s=>'<option value="'+s.replace(/"/g,'&quot;')+'"'+
+    (s===SECTOR_SEL?' selected':'')+'>'+s+'</option>').join('');
+  const filas=emisores.filter(e=>EMP_SECTOR[e]===SECTOR_SEL)
+    .sort((a,b)=>scores[b].global-scores[a].global)
+    .map(e=>'<tr><td><b>'+e+'</b></td>'+scCell(scores[e].global)+
+            mitiCell(e)+'</tr>').join('');
+  col.innerHTML=
+    '<h3><span class="dot" style="background:var(--cyan)"></span>Score por sector</h3>'+
+    '<div class="scorectrls"><label>Sector<select id="filtSect">'+opt+'</select></label></div>'+
+    '<table class="piv"><thead><tr><th>Emisor</th><th>Score Global</th><th>Mitigantes</th>'+
+    '</tr></thead><tbody>'+
+    (filas||'<tr><td colspan="3" style="color:var(--plomo);padding:10px">Sin empresas en el sector.</td></tr>')+
+    '</tbody></table>';
+  document.getElementById('filtSect').onchange=ev=>{ SECTOR_SEL=ev.target.value; buildScoreSector(); };
+}
 
 // ======================================================================
 //  CONTROLES
